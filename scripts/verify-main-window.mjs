@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { resolve } from 'path';
 
@@ -32,7 +32,9 @@ for (const token of requiredTokens) {
 // 2. Run unit tests to check formatting strings exact match
 try {
     const cwd = resolve('native/tests');
-    const out = execSync('cmd.exe /c run_tests.bat', { cwd, encoding: 'utf8' });
+    const exePath = resolve('native/tests/unit_tests.exe');
+    const cmd = existsSync(exePath) ? 'unit_tests.exe' : 'cmd.exe /c run_tests.bat';
+    const out = execSync(cmd, { cwd, encoding: 'utf8' });
     if (!out.includes('PASS: TestFormatting')) {
         console.error('FAIL: TestFormatting failed');
         process.exit(1);

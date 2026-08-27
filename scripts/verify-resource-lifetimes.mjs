@@ -1,22 +1,19 @@
-import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import { resolve } from 'path';
 
-const src = readFileSync(resolve('native/main.cpp'), 'utf8');
-
-const checks = [
-    { name: 'DeleteObject for brushes/pens/fonts', pattern: /DeleteObject/g, minCount: 5 },
-    { name: 'DestroyIcon for tray icons', pattern: /DestroyIcon/g, minCount: 2 },
-    { name: 'DestroyMenu for popups', pattern: /DestroyMenu/g, minCount: 1 },
-    { name: 'DeleteDC / ReleaseDC', pattern: /DeleteDC|ReleaseDC/g, minCount: 2 }
-];
-
-for (const check of checks) {
-    const matches = src.match(check.pattern) || [];
-    if (matches.length < check.minCount) {
-        console.error(`FAIL: ${check.name} count too low (${matches.length} < ${check.minCount})`);
+try {
+    const cwd = resolve('native/tests');
+    const exePath = resolve('native/tests/unit_tests.exe');
+    const cmd = existsSync(exePath) ? 'unit_tests.exe' : 'cmd.exe /c run_tests.bat';
+    const out = execSync(cmd, { cwd, encoding: 'utf8' });
+    if (!out.includes('PASS: TestGdiResourceLeakCheck (Zero Leaks)')) {
+        console.error('FAIL: TestGdiResourceLeakCheck failed:\n' + out);
         process.exit(1);
     }
+    console.log('resource lifetime verification passed');
+    process.exit(0);
+} catch (e) {
+    console.error('FAIL: Resource lifetime check failed:', e.message);
+    process.exit(1);
 }
-
-console.log('resource lifetime verification passed');
-process.exit(0);

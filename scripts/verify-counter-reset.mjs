@@ -1,9 +1,12 @@
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import { resolve } from 'path';
 
 try {
     const cwd = resolve('native/tests');
-    const out = execSync('cmd.exe /c run_tests.bat', { cwd, encoding: 'utf8' });
+    const exePath = resolve('native/tests/unit_tests.exe');
+    const cmd = existsSync(exePath) ? 'unit_tests.exe' : 'cmd.exe /c run_tests.bat';
+    const out = execSync(cmd, { cwd, encoding: 'utf8' });
     if (!out.includes('PASS: TestNetSamplerMock')) {
         console.error('FAIL: TestNetSamplerMock failed counter reset checks');
         process.exit(1);

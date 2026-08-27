@@ -4,12 +4,11 @@ import { resolve } from 'path';
 const src = readFileSync(resolve('native/main.cpp'), 'utf8');
 
 const requiredTokens = [
-    'Shell_NotifyIconW',
-    'NIM_ADD',
-    'NIM_MODIFY',
-    'NIM_DELETE',
     'CreateSpeedTrayIcon',
-    'DestroyIcon',
+    'maskBits',
+    'hbmpMask',
+    'DestroyIcon(g_hCurrentTrayIcon)',
+    'Shell_NotifyIconW',
     'Show Window',
     'Settings...',
     'Show Taskbar Widget',

@@ -39,22 +39,15 @@ void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
     }
 }
 
-// Fills `row` from the live table; returns false if index not present.
-static bool FetchRow(DWORD index, MIB_IF_ROW2* row) {
-    MIB_IF_TABLE2* table = nullptr;
-    if (GetIfTable2(&table) != NO_ERROR || !table) {
-        return false;
+// Retrieves live row by stable NET_LUID
+static bool FetchRowByLuid(NET_LUID luid, MIB_IF_ROW2* row) {
+    if (luid.Value == 0) return false;
+    memset(row, 0, sizeof(MIB_IF_ROW2));
+    row->InterfaceLuid = luid;
+    if (GetIfEntry2(row) == NO_ERROR) {
+        return !row->InterfaceAndOperStatusFlags.FilterInterface;
     }
-    bool found = false;
-    for (DWORD i = 0; i < table->NumEntries; ++i) {
-        if (table->Table[i].InterfaceIndex == index) {
-            *row = table->Table[i];
-            found = true;
-            break;
-        }
-    }
-    FreeMibTable(table);
-    return found;
+    return false;
 }
 
 int GetAdapters(AdapterInfo* out, int maxCount) {
@@ -63,9 +56,20 @@ int GetAdapters(AdapterInfo* out, int maxCount) {
     if (GetIfTable2(&table) == NO_ERROR && table) {
         for (DWORD i = 0; i < table->NumEntries && count < maxCount; ++i) {
             const auto& r = table->Table[i];
-            if (!r.InterfaceAndOperStatusFlags.FilterInterface &&
-                (r.Type == ADAPTER_ETHERNET || r.Type == ADAPTER_80211 || r.Type == ADAPTER_GIGABIT)) {
-                out[count].index = r.InterfaceIndex;
+            if (r.InterfaceAndOperStatusFlags.FilterInterface) {
+                continue;
+            }
+            bool isSupported = (r.Type == ADAPTER_TYPE_ETHERNET ||
+                                r.Type == ADAPTER_TYPE_WIFI ||
+                                r.Type == ADAPTER_TYPE_GIGABIT ||
+                                r.Type == ADAPTER_TYPE_PPP ||
+                                r.Type == ADAPTER_TYPE_VIRTUAL ||
+                                r.Type == ADAPTER_TYPE_TUNNEL);
+            if (isSupported) {
+                out[count].luid = r.InterfaceLuid;
+                out[count].ifIndex = r.InterfaceIndex;
+                out[count].status = r.OperStatus;
+                out[count].type = r.Type;
                 wcsncpy_s(out[count].name, _countof(out[count].name), r.Alias, _TRUNCATE);
                 ++count;
             }
@@ -118,9 +122,9 @@ void NetSampler::UpdateMock(ULONGLONG inBytes, ULONGLONG outBytes, LARGE_INTEGER
     *outUpBps = static_cast<ULONGLONG>(static_cast<double>(dOut) / secs);
 }
 
-bool NetSampler::Sample(DWORD index, ULONGLONG* outDownBps, ULONGLONG* outUpBps) {
-    MIB_IF_ROW2 row{};
-    if (!FetchRow(index, &row)) {
+bool NetSampler::Sample(NET_LUID luid, ULONGLONG* outDownBps, ULONGLONG* outUpBps) {
+    MIB_IF_ROW2 row;
+    if (!FetchRowByLuid(luid, &row)) {
         *outDownBps = 0;
         *outUpBps = 0;
         return false;

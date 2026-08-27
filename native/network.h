@@ -5,29 +5,40 @@
 #include <windows.h>
 #include <iphlpapi.h>
 
-// Adapter types mirrored from .NET NetworkInterfaceType
-enum { ADAPTER_ETHERNET = 6, ADAPTER_80211 = 71, ADAPTER_GIGABIT = 32 };
-
-struct AdapterInfo {
-    DWORD index;
-    wchar_t name[128]; // Alias (display name)
+// Interface types
+enum {
+    ADAPTER_TYPE_ETHERNET = 6,      // IF_TYPE_ETHERNET_CSMACD
+    ADAPTER_TYPE_WIFI = 71,         // IF_TYPE_IEEE80211
+    ADAPTER_TYPE_GIGABIT = 117,     // IF_TYPE_GIGABITETHERNET (NDIS 117)
+    ADAPTER_TYPE_PPP = 23,          // IF_TYPE_PPP
+    ADAPTER_TYPE_VIRTUAL = 53,      // IF_TYPE_PROP_VIRTUAL (WireGuard / VPN)
+    ADAPTER_TYPE_TUNNEL = 131       // IF_TYPE_TUNNEL
 };
 
-// Formatting helpers matching original C# Formatting.cs
+struct AdapterInfo {
+    NET_LUID luid;              // Stable 64-bit interface LUID
+    DWORD ifIndex;              // Current InterfaceIndex (may change dynamically)
+    wchar_t name[128];          // Alias (display name)
+    IF_OPER_STATUS status;      // Operational status (e.g. IfOperStatusUp)
+    DWORD type;                 // Interface type
+};
+
+// Formatting utilities matching C# Formatting.cs
 void FormatSpeed(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen);
 void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
 
-// Live counter sampler for one adapter index.
-// Totals count traffic since Reset(); negative deltas (counter reset) add 0.
+// Live counter sampler keyed by stable NET_LUID.
 struct NetSampler {
     bool valid = false;
+    NET_LUID trackedLuid{};
     ULONGLONG lastIn = 0, lastOut = 0;
     LARGE_INTEGER lastQpc{};
     ULONGLONG totalIn = 0, totalOut = 0;
 
-    void Reset() {
+    void Reset(NET_LUID luid) {
         valid = false;
+        trackedLuid = luid;
         lastIn = 0;
         lastOut = 0;
         lastQpc.QuadPart = 0;
@@ -35,8 +46,18 @@ struct NetSampler {
         totalOut = 0;
     }
 
-    // Live sampling via GetIfTable2
-    bool Sample(DWORD index, ULONGLONG* outDownBps, ULONGLONG* outUpBps);
+    void Clear() {
+        valid = false;
+        trackedLuid.Value = 0;
+        lastIn = 0;
+        lastOut = 0;
+        lastQpc.QuadPart = 0;
+        totalIn = 0;
+        totalOut = 0;
+    }
+
+    // Samples live interface via stable NET_LUID
+    bool Sample(NET_LUID luid, ULONGLONG* outDownBps, ULONGLONG* outUpBps);
 
     // Mock update logic for deterministic testing
     void UpdateMock(ULONGLONG inBytes, ULONGLONG outBytes, LARGE_INTEGER now,
@@ -44,5 +65,5 @@ struct NetSampler {
                     ULONGLONG* outDownBps, ULONGLONG* outUpBps);
 };
 
-// Fills adapters with physical-type interfaces (Ethernet/802.11/GigE).
+// Enumerates physical and VPN/virtual interfaces
 int GetAdapters(AdapterInfo* out, int maxCount);

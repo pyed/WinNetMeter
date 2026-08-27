@@ -46,6 +46,10 @@ enum {
     ID_SET_SAVE_BTN = 2005,
     ID_SET_CANCEL_BTN = 2006,
     ID_SET_PREVIEW = 2007,
+    ID_SET_BG_LBL = 2008,
+    ID_SET_DOWN_LBL = 2009,
+    ID_SET_UP_LBL = 2010,
+    ID_SET_FONT_LBL = 2011,
 };
 
 // Colors
@@ -60,10 +64,21 @@ static const COLORREF CLR_GRAY = RGB(128, 128, 128);
 static HINSTANCE g_hInst = nullptr;
 static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
-static HWND g_combo = nullptr;
-static HWND g_hwndSpeedDown = nullptr, g_hwndSpeedUp = nullptr;
-static HWND g_hwndTotalDown = nullptr, g_hwndTotalUp = nullptr;
 
+// Main window child controls
+static HWND g_hwndIfaceLbl = nullptr;
+static HWND g_combo = nullptr;
+static HWND g_hwndDownTitle = nullptr;
+static HWND g_hwndSpeedDown = nullptr;
+static HWND g_hwndUpTitle = nullptr;
+static HWND g_hwndSpeedUp = nullptr;
+static HWND g_hwndTotdTitle = nullptr;
+static HWND g_hwndTotalDown = nullptr;
+static HWND g_hwndTotuTitle = nullptr;
+static HWND g_hwndTotalUp = nullptr;
+static HWND g_hwndAuthor = nullptr;
+
+// Fonts & Brushes
 static HFONT g_fontLabel = nullptr;
 static HFONT g_fontValue = nullptr;
 static HFONT g_fontCombo = nullptr;
@@ -77,7 +92,9 @@ static HICON g_hCurrentTrayIcon = nullptr;
 static UINT g_uTaskbarCreatedMsg = 0;
 static NetSampler g_sampler;
 static AppSettings g_settings;
-static DWORD g_selectedIfIndex = 0;
+static NET_LUID g_selectedLuid = {};
+static NET_LUID g_comboLuids[64] = {};
+static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
 
 // Overlay speed strings
@@ -96,7 +113,9 @@ static void OpenSettingsDialog();
 static void CreateOrUpdateOverlay();
 static void PositionTaskbarOverlay();
 static void UpdateTrayIcon();
-static void RefreshFonts(int dpi);
+static void SetupTrayIcon();
+static void RemoveTrayIcon();
+static void RefreshFontsAndRelayout(int dpi);
 static void PopulateAdapters();
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
 
@@ -104,37 +123,87 @@ static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
 }
 
-static HFONT MakeFont(const wchar_t* family, double pt, bool bold, bool italic, int dpi) {
+static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi) {
     int height = -MulDiv(static_cast<int>(pt * 96.0 / 72.0 + 0.5), dpi, 96);
+    bool bold = (style & 1) != 0;
+    bool italic = (style & 2) != 0;
     return CreateFontW(height, 0, 0, 0, bold ? FW_BOLD : FW_REGULAR,
                        italic ? TRUE : FALSE, FALSE, FALSE,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                        DEFAULT_PITCH | FF_DONTCARE, family);
 }
 
-static void RefreshFonts(int dpi) {
-    if (g_fontLabel) DeleteObject(g_fontLabel);
-    if (g_fontValue) DeleteObject(g_fontValue);
-    if (g_fontCombo) DeleteObject(g_fontCombo);
-    if (g_fontAuthor) DeleteObject(g_fontAuthor);
-    if (g_fontOverlay) DeleteObject(g_fontOverlay);
+static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi) {
+    return MakeFont(s.fontFamily, s.fontSize, s.fontStyle, dpi);
+}
+
+static void RelayoutMainControls(int dpi) {
+    struct ItemPos {
+        HWND hwnd;
+        int x, y, w, h;
+    } items[] = {
+        { g_hwndIfaceLbl,   20,  20, 120,  20 },
+        { g_combo,         150,  18, 260, 250 },
+        { g_hwndDownTitle,  20,  70, 150,  25 },
+        { g_hwndSpeedDown, 180,  70, 230,  25 },
+        { g_hwndUpTitle,    20, 105, 150,  25 },
+        { g_hwndSpeedUp,   180, 105, 230,  25 },
+        { g_hwndTotdTitle,  20, 165, 150,  25 },
+        { g_hwndTotalDown, 180, 165, 230,  25 },
+        { g_hwndTotuTitle,  20, 195, 150,  25 },
+        { g_hwndTotalUp,   180, 195, 230,  25 },
+        { g_hwndAuthor,     20, 228, 390,  32 },
+    };
+
+    for (const auto& item : items) {
+        if (item.hwnd) {
+            SetWindowPos(item.hwnd, nullptr,
+                         ScaleDpi(item.x, dpi), ScaleDpi(item.y, dpi),
+                         ScaleDpi(item.w, dpi), ScaleDpi(item.h, dpi),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
+static void RefreshFontsAndRelayout(int dpi) {
+    HFONT oldFontLabel = g_fontLabel;
+    HFONT oldFontValue = g_fontValue;
+    HFONT oldFontCombo = g_fontCombo;
+    HFONT oldFontAuthor = g_fontAuthor;
+    HFONT oldFontOverlay = g_fontOverlay;
 
     g_currentDpi = dpi;
-    g_fontLabel = MakeFont(L"Segoe UI", 9.0, false, false, dpi);
-    g_fontValue = MakeFont(L"Segoe UI", 10.0, true, false, dpi);
-    g_fontCombo = MakeFont(L"Segoe UI", 9.0, false, false, dpi);
-    g_fontAuthor = MakeFont(L"Segoe UI", 8.0, false, true, dpi);
+    g_fontLabel = MakeFont(L"Segoe UI", 9.0, 0, dpi);
+    g_fontValue = MakeFont(L"Segoe UI", 10.0, 1, dpi);
+    g_fontCombo = MakeFont(L"Segoe UI", 9.0, 0, dpi);
+    g_fontAuthor = MakeFont(L"Segoe UI", 8.0, 2, dpi);
     g_fontOverlay = CreateOverlayFontFromSettings(g_settings, dpi);
+
+    if (g_hwndIfaceLbl)   SendMessageW(g_hwndIfaceLbl, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_combo)          SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontCombo), TRUE);
+    if (g_hwndDownTitle)  SendMessageW(g_hwndDownTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
+    if (g_hwndSpeedDown)  SendMessageW(g_hwndSpeedDown, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
+    if (g_hwndUpTitle)    SendMessageW(g_hwndUpTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
+    if (g_hwndSpeedUp)    SendMessageW(g_hwndSpeedUp, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
+    if (g_hwndTotdTitle)  SendMessageW(g_hwndTotdTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndTotalDown)  SendMessageW(g_hwndTotalDown, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndTotuTitle)  SendMessageW(g_hwndTotuTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndTotalUp)    SendMessageW(g_hwndTotalUp, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndAuthor)     SendMessageW(g_hwndAuthor, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontAuthor), TRUE);
+
+    RelayoutMainControls(dpi);
+
+    if (oldFontLabel)   DeleteObject(oldFontLabel);
+    if (oldFontValue)   DeleteObject(oldFontValue);
+    if (oldFontCombo)   DeleteObject(oldFontCombo);
+    if (oldFontAuthor)  DeleteObject(oldFontAuthor);
+    if (oldFontOverlay) DeleteObject(oldFontOverlay);
 
     if (g_brushBg) DeleteObject(g_brushBg);
     g_brushBg = CreateSolidBrush(CLR_BG);
 
     if (g_brushOverlayBg) DeleteObject(g_brushOverlayBg);
     g_brushOverlayBg = CreateSolidBrush(g_settings.bg);
-}
-
-static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi) {
-    return MakeFont(s.fontFamily, s.fontSize, s.fontStyle != 0, false, dpi);
 }
 
 // ---- Tray Icon Generation ----------------------------------------------------
@@ -157,7 +226,7 @@ static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpee
     HBITMAP hbmpColor = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
     HBITMAP hbmpOld = static_cast<HBITMAP>(SelectObject(hdcMem, hbmpColor));
 
-    // Fill background
+    // Fill background with dark gray
     RECT rc = { 0, 0, w, h };
     HBRUSH hbg = CreateSolidBrush(RGB(30, 30, 30));
     FillRect(hdcMem, &rc, hbg);
@@ -184,8 +253,9 @@ static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpee
     SelectObject(hdcMem, hOldFont);
     DeleteObject(hFont);
 
-    // 1-bit mask bitmap
-    HBITMAP hbmpMask = CreateBitmap(w, h, 1, 1, nullptr);
+    // Initialize 1-bit monochrome mask (all 0s = fully opaque color bitmap)
+    BYTE maskBits[16 * 2] = { 0 };
+    HBITMAP hbmpMask = CreateBitmap(w, h, 1, 1, maskBits);
 
     ICONINFO ii = {};
     ii.fIcon = TRUE;
@@ -224,7 +294,12 @@ static void UpdateTrayIcon() {
 }
 
 static void SetupTrayIcon() {
-    g_hCurrentTrayIcon = CreateSpeedTrayIcon(L"0", L"0");
+    if (g_hCurrentTrayIcon) {
+        DestroyIcon(g_hCurrentTrayIcon);
+        g_hCurrentTrayIcon = nullptr;
+    }
+
+    g_hCurrentTrayIcon = CreateSpeedTrayIcon(g_szDownCompact, g_szUpCompact);
 
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
@@ -233,7 +308,7 @@ static void SetupTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = g_hCurrentTrayIcon;
-    swprintf_s(nid.szTip, _countof(nid.szTip), L"Network Monitor\n\u2193 0 KB/s\n\u2191 0 KB/s");
+    swprintf_s(nid.szTip, _countof(nid.szTip), L"Network Monitor\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
@@ -260,6 +335,9 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         RECT rc;
         GetClientRect(hwnd, &rc);
 
+        int dpi = static_cast<int>(GetDpiForWindow(hwnd));
+        if (dpi == 0) dpi = g_currentDpi;
+
         // Fill background with settings color
         HBRUSH hbg = CreateSolidBrush(g_settings.bg);
         FillRect(hdc, &rc, hbg);
@@ -274,8 +352,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         SelectObject(hdc, hOldPen);
         DeleteObject(hPen);
 
-        // Draw text: Download (top half) & Upload (bottom half)
-        HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, g_fontOverlay));
+        HFONT hFont = CreateOverlayFontFromSettings(g_settings, dpi);
+        HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, hFont));
         SetBkMode(hdc, TRANSPARENT);
 
         int midY = (rc.bottom - rc.top) / 2;
@@ -284,20 +362,30 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         wchar_t downText[128];
         swprintf_s(downText, _countof(downText), L"\u2193  %s", g_szDownSpeed);
         SetTextColor(hdc, g_settings.down);
-        RECT rcDown = { rc.left + ScaleDpi(5, g_currentDpi), rc.top + ScaleDpi(2, g_currentDpi),
-                        rc.right - ScaleDpi(5, g_currentDpi), midY };
+        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(2, dpi),
+                        rc.right - ScaleDpi(5, dpi), midY };
         DrawTextW(hdc, downText, -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         // Up row: arrow + speed
         wchar_t upText[128];
         swprintf_s(upText, _countof(upText), L"\u2191  %s", g_szUpSpeed);
         SetTextColor(hdc, g_settings.up);
-        RECT rcUp = { rc.left + ScaleDpi(5, g_currentDpi), midY,
-                      rc.right - ScaleDpi(5, g_currentDpi), rc.bottom - ScaleDpi(2, g_currentDpi) };
+        RECT rcUp = { rc.left + ScaleDpi(5, dpi), midY,
+                      rc.right - ScaleDpi(5, dpi), rc.bottom - ScaleDpi(2, dpi) };
         DrawTextW(hdc, upText, -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         SelectObject(hdc, hOldFont);
+        DeleteObject(hFont);
+
         EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        RECT* prc = reinterpret_cast<RECT*>(lp);
+        SetWindowPos(hwnd, HWND_TOPMOST, prc->left, prc->top,
+                     prc->right - prc->left, prc->bottom - prc->top,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -340,42 +428,53 @@ static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
 
     HWND hwndTaskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
-    RECT rcTaskbar = {};
-    if (hwndTaskbar && GetWindowRect(hwndTaskbar, &rcTaskbar)) {
-        int w = ScaleDpi(120, g_currentDpi);
-        int h = ScaleDpi(40, g_currentDpi);
-        int x = 0, y = 0;
+    HMONITOR hMon = MonitorFromWindow(hwndTaskbar ? hwndTaskbar : g_hwndMain, MONITOR_DEFAULTTOPRIMARY);
 
-        // Determine taskbar edge
-        int screenW = GetSystemMetrics(SM_CXSCREEN);
-        int screenH = GetSystemMetrics(SM_CYSCREEN);
-
-        if (rcTaskbar.top > 0 && rcTaskbar.right >= screenW) {
-            // Taskbar at bottom
-            x = rcTaskbar.right - w - ScaleDpi(350, g_currentDpi);
-            y = rcTaskbar.top + ScaleDpi(3, g_currentDpi);
-        } else if (rcTaskbar.top == 0 && rcTaskbar.bottom < screenH) {
-            // Taskbar at top
-            x = rcTaskbar.right - w - ScaleDpi(350, g_currentDpi);
-            y = rcTaskbar.top + ScaleDpi(3, g_currentDpi);
-        } else if (rcTaskbar.left > 0) {
-            // Taskbar on right
-            x = rcTaskbar.left - w - ScaleDpi(5, g_currentDpi);
-            y = screenH - h - ScaleDpi(50, g_currentDpi);
-        } else {
-            // Taskbar on left
-            x = rcTaskbar.right + ScaleDpi(5, g_currentDpi);
-            y = screenH - h - ScaleDpi(50, g_currentDpi);
-        }
-
-        SetWindowPos(g_hwndOverlay, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    } else {
-        int screenW = GetSystemMetrics(SM_CXSCREEN);
-        int screenH = GetSystemMetrics(SM_CYSCREEN);
-        int w = ScaleDpi(120, g_currentDpi);
-        int h = ScaleDpi(40, g_currentDpi);
-        SetWindowPos(g_hwndOverlay, HWND_TOPMOST, screenW - w - 350, screenH - h - 5, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(hMon, &mi)) {
+        mi.rcMonitor = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
     }
+
+    int dpi = static_cast<int>(GetDpiForWindow(g_hwndOverlay));
+    if (dpi == 0) dpi = g_currentDpi;
+
+    int w = ScaleDpi(120, dpi);
+    int h = ScaleDpi(40, dpi);
+    int x = 0, y = 0;
+
+    RECT rcWork = mi.rcWork;
+    RECT rcMon = mi.rcMonitor;
+
+    if (rcWork.bottom < rcMon.bottom) {
+        // Taskbar at bottom
+        x = rcMon.right - w - ScaleDpi(350, dpi);
+        y = rcWork.bottom + ScaleDpi(3, dpi);
+    } else if (rcWork.top > rcMon.top) {
+        // Taskbar at top
+        x = rcMon.right - w - ScaleDpi(350, dpi);
+        y = rcMon.top + ScaleDpi(3, dpi);
+    } else if (rcWork.right < rcMon.right) {
+        // Taskbar on right
+        x = rcWork.right + ScaleDpi(5, dpi);
+        y = rcMon.bottom - h - ScaleDpi(50, dpi);
+    } else if (rcWork.left > rcMon.left) {
+        // Taskbar on left
+        x = rcMon.left + ScaleDpi(5, dpi);
+        y = rcMon.bottom - h - ScaleDpi(50, dpi);
+    } else {
+        // Fallback default
+        x = rcWork.right - w - ScaleDpi(350, dpi);
+        y = rcWork.bottom - h - ScaleDpi(5, dpi);
+    }
+
+    // Keep within monitor bounds
+    if (x < rcMon.left) x = rcMon.left;
+    if (x + w > rcMon.right) x = rcMon.right - w;
+    if (y < rcMon.top) y = rcMon.top;
+    if (y + h > rcMon.bottom) y = rcMon.bottom - h;
+
+    SetWindowPos(g_hwndOverlay, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 static void CreateOrUpdateOverlay() {
@@ -415,12 +514,12 @@ static void CreateOrUpdateOverlay() {
 
 // ---- Sampling & UI Update ---------------------------------------------------
 static void OnTimerTick() {
-    if (!g_selectedIfIndex) {
+    if (g_selectedLuid.Value == 0) {
         return;
     }
 
     ULONGLONG downBps = 0, upBps = 0;
-    if (g_sampler.Sample(g_selectedIfIndex, &downBps, &upBps)) {
+    if (g_sampler.Sample(g_selectedLuid, &downBps, &upBps)) {
         FormatSpeed(downBps, g_szDownSpeed, _countof(g_szDownSpeed));
         FormatSpeed(upBps, g_szUpSpeed, _countof(g_szUpSpeed));
         FormatCompact(downBps, g_szDownCompact, _countof(g_szDownCompact));
@@ -453,11 +552,11 @@ static void OnTimerTick() {
 
 static void OnComboSelectionChanged() {
     int sel = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
-    if (sel >= 0) {
-        DWORD ifIndex = static_cast<DWORD>(SendMessageW(g_combo, CB_GETITEMDATA, sel, 0));
-        if (ifIndex != g_selectedIfIndex) {
-            g_selectedIfIndex = ifIndex;
-            g_sampler.Reset();
+    if (sel >= 0 && sel < g_comboLuidCount) {
+        NET_LUID luid = g_comboLuids[sel];
+        if (luid.Value != g_selectedLuid.Value) {
+            g_selectedLuid = luid;
+            g_sampler.Reset(luid);
             SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
             SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
             SetWindowTextW(g_hwndTotalDown, L"0 B");
@@ -471,14 +570,18 @@ static void PopulateAdapters() {
 
     AdapterInfo list[64];
     int count = GetAdapters(list, 64);
+    g_comboLuidCount = 0;
 
     int selectedIdx = -1;
     for (int i = 0; i < count; ++i) {
         int item = static_cast<int>(SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(list[i].name)));
-        SendMessageW(g_combo, CB_SETITEMDATA, item, static_cast<LPARAM>(list[i].index));
-        if (list[i].index == g_selectedIfIndex || (g_selectedIfIndex == 0 && i == 0)) {
-            selectedIdx = item;
-            g_selectedIfIndex = list[i].index;
+        if (item >= 0 && item < 64) {
+            g_comboLuids[item] = list[i].luid;
+            g_comboLuidCount = max(g_comboLuidCount, item + 1);
+            if (list[i].luid.Value == g_selectedLuid.Value || (g_selectedLuid.Value == 0 && i == 0)) {
+                selectedIdx = item;
+                g_selectedLuid = list[i].luid;
+            }
         }
     }
 
@@ -497,8 +600,15 @@ static void ShowMainWindow() {
 // ---- Settings Dialog ---------------------------------------------------------
 struct SettingsDialogState {
     AppSettings tempSettings;
-    HWND hwndDlg;
-    HWND hwndPreview;
+    HWND hwndDlg = nullptr;
+    HWND hwndPreview = nullptr;
+    HWND hwndLblBg = nullptr, hwndBtnBg = nullptr;
+    HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
+    HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
+    HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
+    HWND hwndBtnSave = nullptr, hwndBtnCancel = nullptr;
+    HFONT hFontDlg = nullptr;
+    int dpi = 96;
 };
 
 static COLORREF PickColor(HWND hwndOwner, COLORREF initColor) {
@@ -515,10 +625,11 @@ static COLORREF PickColor(HWND hwndOwner, COLORREF initColor) {
     return initColor;
 }
 
-static void PickFont(HWND hwndOwner, AppSettings* s) {
+static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
     LOGFONTW lf = {};
-    lf.lfHeight = -MulDiv(static_cast<int>(s->fontSize * 96.0 / 72.0 + 0.5), g_currentDpi, 96);
-    lf.lfWeight = (s->fontStyle != 0) ? FW_BOLD : FW_REGULAR;
+    lf.lfHeight = -MulDiv(static_cast<int>(s->fontSize * 96.0 / 72.0 + 0.5), dpi, 96);
+    lf.lfWeight = (s->fontStyle & 1) ? FW_BOLD : FW_REGULAR;
+    lf.lfItalic = (s->fontStyle & 2) ? TRUE : FALSE;
     wcsncpy_s(lf.lfFaceName, _countof(lf.lfFaceName), s->fontFamily, _TRUNCATE);
 
     CHOOSEFONTW cf = {};
@@ -529,7 +640,47 @@ static void PickFont(HWND hwndOwner, AppSettings* s) {
     if (ChooseFontW(&cf)) {
         wcsncpy_s(s->fontFamily, _countof(s->fontFamily), lf.lfFaceName, _TRUNCATE);
         s->fontSize = cf.iPointSize / 10.0;
-        s->fontStyle = (lf.lfWeight >= FW_BOLD) ? 1 : 0;
+        int style = 0;
+        if (lf.lfWeight >= FW_BOLD) style |= 1;
+        if (lf.lfItalic) style |= 2;
+        s->fontStyle = style;
+    }
+}
+
+static void RelayoutSettingsDialog(SettingsDialogState* state, int dpi) {
+    state->dpi = dpi;
+    HFONT oldFont = state->hFontDlg;
+    state->hFontDlg = MakeFont(L"Segoe UI", 9.0, 0, dpi);
+
+    struct SetItem {
+        HWND hwnd;
+        int x, y, w, h;
+    } items[] = {
+        { state->hwndLblBg,     20,  20, 140, 25 },
+        { state->hwndBtnBg,    170,  16,  80, 25 },
+        { state->hwndLblDown,   20,  55, 140, 25 },
+        { state->hwndBtnDown,  170,  51,  80, 25 },
+        { state->hwndLblUp,     20,  90, 140, 25 },
+        { state->hwndBtnUp,    170,  86,  80, 25 },
+        { state->hwndLblFont,   20, 125, 140, 25 },
+        { state->hwndBtnFont,  170, 121,  80, 25 },
+        { state->hwndPreview,  270,  16, 120, 80 },
+        { state->hwndBtnSave,  230, 170,  75, 28 },
+        { state->hwndBtnCancel,315, 170,  75, 28 },
+    };
+
+    for (const auto& it : items) {
+        if (it.hwnd) {
+            SendMessageW(it.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(state->hFontDlg), TRUE);
+            SetWindowPos(it.hwnd, nullptr,
+                         ScaleDpi(it.x, dpi), ScaleDpi(it.y, dpi),
+                         ScaleDpi(it.w, dpi), ScaleDpi(it.h, dpi),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    if (oldFont) {
+        DeleteObject(oldFont);
     }
 }
 
@@ -541,6 +692,8 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
+
+        int dpi = state ? state->dpi : 96;
 
         COLORREF bg = state ? state->tempSettings.bg : RGB(30, 30, 30);
         COLORREF down = state ? state->tempSettings.down : RGB(0, 255, 100);
@@ -559,15 +712,17 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
         SelectObject(hdc, hOldPen);
         DeleteObject(hPen);
 
-        HFONT hFont = state ? CreateOverlayFontFromSettings(state->tempSettings, g_currentDpi) : nullptr;
+        HFONT hFont = state ? CreateOverlayFontFromSettings(state->tempSettings, dpi) : nullptr;
         HFONT hOldFont = hFont ? static_cast<HFONT>(SelectObject(hdc, hFont)) : nullptr;
         SetBkMode(hdc, TRANSPARENT);
 
-        RECT rcDown = { rc.left + 5, rc.top + 8, rc.right - 5, rc.top + 32 };
+        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(8, dpi),
+                        rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(32, dpi) };
         SetTextColor(hdc, down);
         DrawTextW(hdc, L"\u2193  0.00 KB/s", -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-        RECT rcUp = { rc.left + 5, rc.top + 40, rc.right - 5, rc.top + 64 };
+        RECT rcUp = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(40, dpi),
+                      rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(64, dpi) };
         SetTextColor(hdc, up);
         DrawTextW(hdc, L"\u2191  0.00 KB/s", -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
@@ -594,32 +749,31 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
         state->hwndDlg = hwnd;
 
-        auto mkBtn = [&](const wchar_t* txt, int x, int y, int w, int h, int id) {
-            HWND b = CreateWindowExW(0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                     x, y, w, h, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
-            SendMessageW(b, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
-            return b;
+        int dpi = static_cast<int>(GetDpiForWindow(hwnd));
+        if (dpi == 0) dpi = g_currentDpi;
+        state->dpi = dpi;
+
+        auto mkBtn = [&](const wchar_t* txt, int id) {
+            return CreateWindowExW(0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                  0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
         };
-        auto mkLbl = [&](const wchar_t* txt, int x, int y, int w, int h) {
-            HWND l = CreateWindowExW(0, L"STATIC", txt, WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                     x, y, w, h, hwnd, nullptr, g_hInst, nullptr);
-            SendMessageW(l, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
-            return l;
+        auto mkLbl = [&](const wchar_t* txt, int id) {
+            return CreateWindowExW(0, L"STATIC", txt, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                  0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
         };
 
-        mkLbl(L"Overlay Background:", 20, 20, 140, 25);
-        mkBtn(L"Select", 170, 16, 80, 25, ID_SET_BG_BTN);
+        state->hwndLblBg = mkLbl(L"Overlay Background:", ID_SET_BG_LBL);
+        state->hwndBtnBg = mkBtn(L"Select", ID_SET_BG_BTN);
 
-        mkLbl(L"Download Color:", 20, 55, 140, 25);
-        mkBtn(L"Select", 170, 51, 80, 25, ID_SET_DOWN_BTN);
+        state->hwndLblDown = mkLbl(L"Download Color:", ID_SET_DOWN_LBL);
+        state->hwndBtnDown = mkBtn(L"Select", ID_SET_DOWN_BTN);
 
-        mkLbl(L"Upload Color:", 20, 90, 140, 25);
-        mkBtn(L"Select", 170, 86, 80, 25, ID_SET_UP_BTN);
+        state->hwndLblUp = mkLbl(L"Upload Color:", ID_SET_UP_LBL);
+        state->hwndBtnUp = mkBtn(L"Select", ID_SET_UP_BTN);
 
-        mkLbl(L"Overlay Font:", 20, 125, 140, 25);
-        mkBtn(L"Choose", 170, 121, 80, 25, ID_SET_FONT_BTN);
+        state->hwndLblFont = mkLbl(L"Overlay Font:", ID_SET_FONT_LBL);
+        state->hwndBtnFont = mkBtn(L"Choose", ID_SET_FONT_BTN);
 
-        // Preview panel
         wchar_t prevCls[] = L"SettingsPreviewPanel";
         WNDCLASSEXW pwc = { sizeof(pwc) };
         pwc.lpfnWndProc = SettingsPreviewWndProc;
@@ -628,11 +782,23 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         RegisterClassExW(&pwc);
 
         state->hwndPreview = CreateWindowExW(0, prevCls, nullptr, WS_CHILD | WS_VISIBLE,
-                                             270, 16, 120, 80, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_PREVIEW)), g_hInst, nullptr);
+                                             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_PREVIEW)), g_hInst, nullptr);
         SetWindowLongPtrW(state->hwndPreview, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
 
-        mkBtn(L"Save", 230, 170, 75, 28, ID_SET_SAVE_BTN);
-        mkBtn(L"Cancel", 315, 170, 75, 28, ID_SET_CANCEL_BTN);
+        state->hwndBtnSave = mkBtn(L"Save", ID_SET_SAVE_BTN);
+        state->hwndBtnCancel = mkBtn(L"Cancel", ID_SET_CANCEL_BTN);
+
+        RelayoutSettingsDialog(state, dpi);
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        int newDpi = HIWORD(wp);
+        RECT* prc = reinterpret_cast<RECT*>(lp);
+        SetWindowPos(hwnd, nullptr, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        if (state) {
+            RelayoutSettingsDialog(state, newDpi);
+        }
         return 0;
     }
     case WM_CTLCOLORSTATIC: {
@@ -653,12 +819,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             state->tempSettings.up = PickColor(hwnd, state->tempSettings.up);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
         } else if (id == ID_SET_FONT_BTN && state) {
-            PickFont(hwnd, &state->tempSettings);
+            PickFont(hwnd, &state->tempSettings, state->dpi);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
         } else if (id == ID_SET_SAVE_BTN && state) {
             g_settings = state->tempSettings;
             SaveSettings(&g_settings);
-            RefreshFonts(g_currentDpi);
+            RefreshFontsAndRelayout(g_currentDpi);
             CreateOrUpdateOverlay();
             DestroyWindow(hwnd);
         } else if (id == ID_SET_CANCEL_BTN) {
@@ -675,6 +841,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_DESTROY:
+        if (state && state->hFontDlg) {
+            DeleteObject(state->hFontDlg);
+            state->hFontDlg = nullptr;
+        }
+        return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -687,6 +859,7 @@ static void OpenSettingsDialog() {
     state.tempSettings = g_settings;
     state.hwndDlg = nullptr;
     state.hwndPreview = nullptr;
+    state.hFontDlg = nullptr;
 
     wchar_t cls[] = L"NetworkMonitorLiteSettings";
     WNDCLASSEXW wc = { sizeof(wc) };
@@ -714,6 +887,10 @@ static void OpenSettingsDialog() {
 
     MSG msg;
     while (IsWindow(hwndDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (msg.message == WM_QUIT) {
+            PostQuitMessage(static_cast<int>(msg.wParam));
+            break;
+        }
         if (!IsDialogMessageW(hwndDlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -737,44 +914,38 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
         g_hwndMain = hwnd;
-        RefreshFonts(g_currentDpi);
 
-        auto mkLabel = [&](const wchar_t* text, int x, int y, int w, int h, int id,
-                           HFONT font, UINT ss) {
-            HWND lbl = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | ss,
-                                       ScaleDpi(x, g_currentDpi), ScaleDpi(y, g_currentDpi),
-                                       ScaleDpi(w, g_currentDpi), ScaleDpi(h, g_currentDpi),
-                                       hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
-            SendMessageW(lbl, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-            return lbl;
+        auto mkLabel = [&](const wchar_t* text, int id, UINT ss) {
+            return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | ss,
+                                  0, 0, 0, 0,
+                                  hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
         };
 
-        mkLabel(L"Network Interface:", 20, 20, 120, 20, ID_IFACE_LABEL, g_fontLabel, SS_LEFT);
+        g_hwndIfaceLbl = mkLabel(L"Network Interface:", ID_IFACE_LABEL, SS_LEFT);
 
         g_combo = CreateWindowExW(0, L"COMBOBOX", nullptr,
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                  ScaleDpi(150, g_currentDpi), ScaleDpi(18, g_currentDpi),
-                                  ScaleDpi(260, g_currentDpi), ScaleDpi(250, g_currentDpi),
+                                  0, 0, 0, 0,
                                   hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_COMBO_IF)), g_hInst, nullptr);
-        SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontCombo), TRUE);
 
         PopulateAdapters();
 
-        mkLabel(L"Download Speed:", 20, 70, 150, 25, ID_DOWN_TITLE, g_fontValue, SS_LEFT);
-        g_hwndSpeedDown = mkLabel(L"0.00 KB/s", 180, 70, 230, 25, ID_SPEED_DOWN, g_fontValue, SS_RIGHT);
+        g_hwndDownTitle = mkLabel(L"Download Speed:", ID_DOWN_TITLE, SS_LEFT);
+        g_hwndSpeedDown = mkLabel(L"0.00 KB/s", ID_SPEED_DOWN, SS_RIGHT);
 
-        mkLabel(L"Upload Speed:", 20, 105, 150, 25, ID_UP_TITLE, g_fontValue, SS_LEFT);
-        g_hwndSpeedUp = mkLabel(L"0.00 KB/s", 180, 105, 230, 25, ID_SPEED_UP, g_fontValue, SS_RIGHT);
+        g_hwndUpTitle = mkLabel(L"Upload Speed:", ID_UP_TITLE, SS_LEFT);
+        g_hwndSpeedUp = mkLabel(L"0.00 KB/s", ID_SPEED_UP, SS_RIGHT);
 
-        mkLabel(L"Total Downloaded:", 20, 165, 150, 25, ID_TOTD_TITLE, g_fontLabel, SS_LEFT);
-        g_hwndTotalDown = mkLabel(L"0.00 MB", 180, 165, 230, 25, ID_TOTAL_DOWN, g_fontLabel, SS_RIGHT);
+        g_hwndTotdTitle = mkLabel(L"Total Downloaded:", ID_TOTD_TITLE, SS_LEFT);
+        g_hwndTotalDown = mkLabel(L"0.00 MB", ID_TOTAL_DOWN, SS_RIGHT);
 
-        mkLabel(L"Total Uploaded:", 20, 195, 150, 25, ID_TOTU_TITLE, g_fontLabel, SS_LEFT);
-        g_hwndTotalUp = mkLabel(L"0.00 MB", 180, 195, 230, 25, ID_TOTAL_UP, g_fontLabel, SS_RIGHT);
+        g_hwndTotuTitle = mkLabel(L"Total Uploaded:", ID_TOTU_TITLE, SS_LEFT);
+        g_hwndTotalUp = mkLabel(L"0.00 MB", ID_TOTAL_UP, SS_RIGHT);
 
-        // Author link at bottom
-        mkLabel(L"networkMonitorLite\u2122 by mcagriaksoy - 2025\nFor support, visit: github.com/mcagriaksoy/NetworkMonitorLite",
-                20, 228, 390, 32, ID_AUTHOR_LINK, g_fontAuthor, SS_RIGHT | SS_NOTIFY);
+        g_hwndAuthor = mkLabel(L"networkMonitorLite\u2122 by mcagriaksoy - 2025\nFor support, visit: github.com/mcagriaksoy/NetworkMonitorLite",
+                               ID_AUTHOR_LINK, SS_RIGHT | SS_NOTIFY);
+
+        RefreshFontsAndRelayout(g_currentDpi);
 
         SetTimer(hwnd, ID_TIMER, 1000, nullptr);
         SetupTrayIcon();
@@ -825,6 +996,13 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_DISPLAYCHANGE:
+    case WM_SETTINGCHANGE: {
+        if (g_hwndOverlay && g_settings.showWidget) {
+            PositionTaskbarOverlay();
+        }
+        return 0;
+    }
     case WM_TRAYICON: {
         if (lp == WM_RBUTTONUP) {
             POINT pt;
@@ -866,10 +1044,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DPICHANGED: {
         int newDpi = HIWORD(wp);
-        RefreshFonts(newDpi);
         RECT* prc = reinterpret_cast<RECT*>(lp);
         SetWindowPos(hwnd, nullptr, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
+        RefreshFontsAndRelayout(newDpi);
         CreateOrUpdateOverlay();
         return 0;
     }

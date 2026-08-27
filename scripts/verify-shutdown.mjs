@@ -8,7 +8,8 @@ const requiredTokens = [
     'KillTimer',
     'RemoveTrayIcon',
     'DestroyWindow',
-    'PostQuitMessage'
+    'PostQuitMessage',
+    'msg.message == WM_QUIT'
 ];
 
 for (const token of requiredTokens) {

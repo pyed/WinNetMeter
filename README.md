@@ -4,24 +4,24 @@
 <a href="https://github.com/mcagriaksoy/networkMonitorLite/issues"><img src="https://img.shields.io/github/issues/mcagriaksoy/networkMonitorLite" alt="issues - networkMonitorLite"></a>
 
 
-NetworkMonitorLite™ is a tiny (200KB), malware-free Windows app that shows live upload/download speeds in a clean interface, system tray icon, and draggable taskbar widget. Lightweight, portable, and fully compatible with Windows 11.
+NetworkMonitorLite™ is a tiny, dependency-free native Windows application that shows live upload/download speeds in a clean interface, system tray icon, and draggable taskbar widget. Lightweight, portable, and fully compatible with Windows 10 and Windows 11.
 
-<img src="https://github.com/mcagriaksoy/networkMonitorLite/blob/main/networkMonitorLite/Assets/icon.ico" alt="networkMonitorLite™ icon"></a>
-- Tiny footprint – just around 200KB, making it ultra-fast and resource-friendly
-- No malware, no bloat – clean and safe for all systems
-- Windows 11 compatible – runs smoothly on modern setups
-- Instant visibility – see your network performance at a glance
-- No installation required – portable and easy to use
+- **Zero dependencies** – Native C++20 Win32 binary, statically linked CRT (`/MT`), no .NET or VC runtime DLL requirements
+- **Tiny footprint** – Single ~400KB executable, ultra-fast and resource-friendly
+- **Per-Monitor V2 DPI** – Crisp scaling on multi-monitor setups with different scaling factors
+- **No malware, no bloat** – Zero telemetry, zero updaters, zero background socket connections
+- **Instant visibility** – Real-time speeds using monotonic 64-bit IP Helper API counters
+- **No installation required** – 100% portable
 
 ## Features
-- Live download and upload speed monitoring per active network interface
-- Minimal taskbar widget you can drag and place near the system tray
-- Tray icon with compact live speeds (no GDI leaks)
-- Settings to customize:
+- Live download and upload speed monitoring per active network interface (Ethernet, Wi-Fi, VPNs)
+- Minimal taskbar widget you can drag and place near the system tray (monitor-aware)
+- Tray icon with dynamic live speeds (zero GDI leaks)
+- Native Settings dialog to customize:
   - Widget background color
   - Download and upload text colors
   - Font family, size, and style
-- Settings persist across sessions (stored in AppData)
+- Settings persist across sessions in `%APPDATA%\NetworkMonitorLite\settings.ini`
 
 ## Screenshots
 
@@ -38,28 +38,41 @@ Settings UI:
 ![Settings Dialog](img/settings.png)
 
 ## Requirements
-- Windows 10/11
-- .NET 8.0 for Windows (TargetFramework: `net8.0-windows`)
+- Windows 10 or Windows 11 (x64)
 
 ## Build and Run
-You can open the project in Visual Studio or use the .NET SDK from PowerShell:
 
+### Native x64 Build (Recommended)
+From Visual Studio Developer Command Prompt or x64 Native Tools:
+
+```cmd
+cd native
+build.bat
+```
+
+The output executable is generated at `native\out\NetworkMonitorLite.exe`.
+
+### Running Unit Tests
+```cmd
+cd native\tests
+run_tests.bat
+```
+
+### C# / .NET Legacy Build
 ```powershell
-# Build
+cd networkMonitorLite
 dotnet build
-
-# Run
 dotnet run
 ```
 
 ## Usage
-1. Pick a network interface at the top of the main window.
+1. Pick a network interface from the dropdown in the main window.
 2. Watch live speeds (Download/Upload) and total transfer amounts.
-3. Use the tray icon menu:
-   - Show Window: bring the main window to front
-   - Settings…: open customization dialog
-   - Show Taskbar Widget: toggle the small draggable overlay
-   - Exit: quit the app
+3. Use the system tray icon menu:
+   - **Show Window**: Bring main window to front
+   - **Settings…**: Open native customization dialog
+   - **Show Taskbar Widget**: Toggle the draggable overlay
+   - **Exit**: Clean shutdown
 
 ### Settings
 - Right-click the tray icon and choose "Settings…" to customize:
@@ -67,18 +80,7 @@ dotnet run
   - Download and upload text colors
   - Font family, size, and style
 - Settings are saved to:
-  - `%APPDATA%\NetworkMonitorLite\settings.json`
-  - They load automatically on startup and apply to the widget.
-
-## Taskbar Widget behavior
-- The widget is set TopMost and additionally forced to the top Z-order using `SetWindowPos` to avoid slipping behind the taskbar.
-- You can drag it by holding the left mouse button anywhere on the widget.
-
-## Notes
-- The tray icon is drawn on the fly; icon handles are cloned and destroyed to prevent GDI leaks.
-- If the primary screen is not available, the app falls back to the first available screen.
-- If you don’t see any interfaces, ensure the adapter is up; administrative privileges are typically not required.
+  - `%APPDATA%\NetworkMonitorLite\settings.ini`
 
 ## Support
 - Author: mcagriaksoy — https://github.com/mcagriaksoy/NetworkMonitorLite
-

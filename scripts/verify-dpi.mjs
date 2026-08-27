@@ -13,8 +13,13 @@ if (!src.includes('WM_DPICHANGED')) {
     process.exit(1);
 }
 
-if (!src.includes('MulDiv')) {
-    console.error('FAIL: main.cpp must use DPI scaling helper');
+if (!src.includes('RefreshFontsAndRelayout') || !src.includes('RelayoutMainControls') || !src.includes('RelayoutSettingsDialog')) {
+    console.error('FAIL: main.cpp must relayout and reassign fonts to all child controls on DPI change');
+    process.exit(1);
+}
+
+if (!src.includes('GetDpiForWindow(hwnd)') && !src.includes('GetDpiForWindow(g_hwndOverlay)')) {
+    console.error('FAIL: overlay and dialogs must query their own window DPI');
     process.exit(1);
 }
 

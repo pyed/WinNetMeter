@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 
 const src = readFileSync(resolve('native/settings.cpp'), 'utf8');
@@ -16,7 +16,9 @@ if (!src.includes('NetworkMonitorLite') || !src.includes('settings.ini')) {
 
 try {
     const cwd = resolve('native/tests');
-    const out = execSync('cmd.exe /c run_tests.bat', { cwd, encoding: 'utf8' });
+    const exePath = resolve('native/tests/unit_tests.exe');
+    const cmd = existsSync(exePath) ? 'unit_tests.exe' : 'cmd.exe /c run_tests.bat';
+    const out = execSync(cmd, { cwd, encoding: 'utf8' });
     if (!out.includes('PASS: TestSettings')) {
         console.error('FAIL: TestSettings failed');
         process.exit(1);

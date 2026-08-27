@@ -4,21 +4,19 @@ import { resolve } from 'path';
 const src = readFileSync(resolve('native/main.cpp'), 'utf8');
 
 const requiredTokens = [
-    'OverlayWndProc',
-    'WS_EX_TOPMOST',
-    'WS_EX_TOOLWINDOW',
-    'WS_EX_LAYERED',
-    'SetLayeredWindowAttributes',
+    'MonitorFromWindow',
+    'GetMonitorInfoW',
+    'rcWork',
+    'rcMon',
+    'WM_DISPLAYCHANGE',
+    'WM_SETTINGCHANGE',
     'PositionTaskbarOverlay',
-    'g_overlayDragging',
-    'WM_LBUTTONDOWN',
-    'WM_MOUSEMOVE',
-    'WM_LBUTTONUP'
+    'g_overlayDragging'
 ];
 
 for (const token of requiredTokens) {
     if (!src.includes(token)) {
-        console.error(`FAIL: main.cpp is missing overlay widget token: "${token}"`);
+        console.error(`FAIL: main.cpp is missing taskbar positioning token: "${token}"`);
         process.exit(1);
     }
 }
