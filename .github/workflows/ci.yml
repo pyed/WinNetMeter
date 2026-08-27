@@ -29,6 +29,13 @@ jobs:
         working-directory: native/tests
         run: run_tests.bat
 
+      - name: Verify PE Metadata and Dependencies
+        shell: pwsh
+        run: |
+          ./native/tests/windows_integration_tests.ps1 -Check Metadata
+          ./native/tests/windows_integration_tests.ps1 -Check StaticRuntime
+          ./native/tests/windows_integration_tests.ps1 -Check Imports
+
       - name: Verify Executable
         shell: pwsh
         run: |

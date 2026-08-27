@@ -5,7 +5,7 @@
 <a href="#license"><img src="https://img.shields.io/badge/License-Apache_v2-red" alt="License"></a>
 <a href="https://github.com/pyed/networkMonitorLite/issues"><img src="https://img.shields.io/github/issues/pyed/networkMonitorLite" alt="issues - WinNetMeter"></a>
 
-**WinNetMeter** is a lightweight, zero-dependency native Windows utility that displays real-time download and upload throughput in a clean desktop window, a dynamic system tray icon, and a draggable taskbar widget.
+**WinNetMeter** is a lightweight, zero-dependency native Windows utility that displays real-time download and upload throughput through a dynamic system tray icon, a transparent taskbar meter, and an optional status window.
 
 Built in modern C++20 for 64-bit Windows 10 and 11, it operates entirely via native Win32 and IP Helper APIs with zero runtime dependencies.
 
@@ -20,15 +20,16 @@ Built in modern C++20 for 64-bit Windows 10 and 11, it operates entirely via nat
 - **Per-Monitor V2 DPI**: Crisp rendering and dynamic rescaling across multiple monitors with varying DPI scaling factors.
 - **Privacy & Security**: Zero telemetry, zero analytics, zero background network connections, and no administrative elevation required.
 - **Portable**: Fully self-contained; settings persist in `%APPDATA%\WinNetMeter\settings.ini`.
+- **Single Instance**: Repeated launches hand off to the existing per-session process without duplicating the tray icon, sampler, or meter.
 
 ---
 
 ## Features
 
 - **Live Speed Monitoring**: Real-time upload and download speeds and session totals for physical (Ethernet, Wi-Fi) and VPN/virtual network adapters.
-- **Draggable Taskbar Widget**: Compact overlay docked adjacent to the taskbar (bottom, top, left, or right) with custom opacity and colors.
+- **Taskbar-Attached Meter**: Compact, transparent, non-activating overlay that follows the documented system-taskbar rectangle and DPI without Explorer injection.
 - **Dynamic System Tray Icon**: Generates real-time speed icons in the notification area with leak-free GDI handle lifecycle management.
-- **Customizable Appearance**: Settings dialog to customize widget background color, download/upload text colors, font family, font size, and full font styles (Bold, Italic, Underline, Strikeout).
+- **Customizable Appearance**: Settings dialog to customize download/upload text colors, font family, font size, and full font styles (Bold, Italic, Underline, Strikeout).
 
 ---
 
@@ -43,7 +44,7 @@ Built in modern C++20 for 64-bit Windows 10 and 11, it operates entirely via nat
 ### Settings Dialog
 ![Settings Dialog](img/settings.png)
 
-> *Note*: Existing screenshot assets depict the original UI layout and may display earlier development window titles.
+> *Note*: Existing screenshot assets depict the original UI layout and may show the earlier opaque, draggable widget.
 
 ---
 
@@ -103,6 +104,9 @@ run_tests.bat
 - **Adapter Rebind & Fallback**: Proof that interface reconnection with a new LUID establishes a zero-speed baseline without spikes, preserves totals, and never falls back to an unrelated adapter.
 - **Settings INI Roundtrip**: Reading, parsing, and persisting colors, fonts, and styles to INI at `%APPDATA%\WinNetMeter\settings.ini`.
 - **Zero GDI Resource Leaks**: Stress-tested across 200 icon and font lifecycles verified via `GetGuiResources` (`GR_GDIOBJECTS` and `GR_USEROBJECTS`).
+- **Taskbar Geometry & Alpha**: Deterministic coverage for taskbar edges, negative monitor coordinates, DPI scaling, and premultiplied per-pixel alpha.
+
+Built-EXE integration checks are also available from PowerShell through `native\tests\windows_integration_tests.ps1` for instance, HWND, metadata, import, and live resource-lifetime verification.
 
 ---
 
@@ -121,7 +125,6 @@ FontFamily=Segoe UI
 FontSize=8.0
 FontStyle=1
 ShowWidget=1
-Background=1315860
 DownloadColor=5463040
 UploadColor=47615
 ```

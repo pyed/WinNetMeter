@@ -12,12 +12,14 @@
 #include <stdlib.h>
 #include <cwchar>
 #include "network.h"
+#include "overlay.h"
 #include "settings.h"
 
 // Window message constants & IDs
 enum {
     ID_TIMER = 1,
     WM_TRAYICON = WM_APP + 1,
+    WM_OVERLAY_REFRESH = WM_APP + 2,
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -39,14 +41,12 @@ enum {
     ID_TRAY_EXIT = 1004,
 
     // Settings dialog control IDs
-    ID_SET_BG_BTN = 2001,
     ID_SET_DOWN_BTN = 2002,
     ID_SET_UP_BTN = 2003,
     ID_SET_FONT_BTN = 2004,
     ID_SET_SAVE_BTN = 2005,
     ID_SET_CANCEL_BTN = 2006,
     ID_SET_PREVIEW = 2007,
-    ID_SET_BG_LBL = 2008,
     ID_SET_DOWN_LBL = 2009,
     ID_SET_UP_LBL = 2010,
     ID_SET_FONT_LBL = 2011,
@@ -59,6 +59,8 @@ static const COLORREF CLR_UP = RGB(255, 185, 0);      // #FFB900 (Orange)
 static const COLORREF CLR_LABEL = RGB(211, 211, 211); // LightGray
 static const COLORREF CLR_WHITE = RGB(255, 255, 255);
 static const COLORREF CLR_GRAY = RGB(128, 128, 128);
+static const wchar_t MAIN_WINDOW_CLASS[] = L"WinNetMeterMain";
+static const wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.SingleInstance";
 
 // Global application state
 static HINSTANCE g_hInst = nullptr;
@@ -86,7 +88,6 @@ static HFONT g_fontAuthor = nullptr;
 static HFONT g_fontOverlay = nullptr;
 
 static HBRUSH g_brushBg = nullptr;
-static HBRUSH g_brushOverlayBg = nullptr;
 static HICON g_hCurrentTrayIcon = nullptr;
 
 static UINT g_uTaskbarCreatedMsg = 0;
@@ -97,16 +98,13 @@ static wchar_t g_selectedAlias[128] = L"";
 static NET_LUID g_comboLuids[64] = {};
 static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
+static int g_overlayFontDpi = 0;
 
 // Overlay speed strings
 static wchar_t g_szDownSpeed[64] = L"0.00 KB/s";
 static wchar_t g_szUpSpeed[64] = L"0.00 KB/s";
 static wchar_t g_szDownCompact[32] = L"0B";
 static wchar_t g_szUpCompact[32] = L"0B";
-
-// Overlay dragging state
-static bool g_overlayDragging = false;
-static POINT g_overlayDragOffset = { 0, 0 };
 
 // Forward declarations
 static void ShowMainWindow();
@@ -124,7 +122,8 @@ static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
 }
 
-static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi) {
+static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi,
+                      DWORD quality = CLEARTYPE_QUALITY) {
     int height = -MulDiv(static_cast<int>(pt * 96.0 / 72.0 + 0.5), dpi, 96);
     bool bold = (style & 1) != 0;
     bool italic = (style & 2) != 0;
@@ -135,12 +134,21 @@ static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi) {
                        italic ? TRUE : FALSE,
                        underline ? TRUE : FALSE,
                        strikeout ? TRUE : FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, quality,
                        DEFAULT_PITCH | FF_DONTCARE, family);
 }
 
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi) {
-    return MakeFont(s.fontFamily, s.fontSize, s.fontStyle, dpi);
+    return MakeFont(s.fontFamily, s.fontSize, s.fontStyle, dpi, ANTIALIASED_QUALITY);
+}
+
+static HFONT GetOverlayFont(int dpi) {
+    if (!g_fontOverlay || g_overlayFontDpi != dpi) {
+        if (g_fontOverlay) DeleteObject(g_fontOverlay);
+        g_fontOverlay = CreateOverlayFontFromSettings(g_settings, dpi);
+        g_overlayFontDpi = dpi;
+    }
+    return g_fontOverlay;
 }
 
 static void RelayoutMainControls(int dpi) {
@@ -183,7 +191,8 @@ static void RefreshFontsAndRelayout(int dpi) {
     g_fontValue = MakeFont(L"Segoe UI", 10.0, 1, dpi);
     g_fontCombo = MakeFont(L"Segoe UI", 9.0, 0, dpi);
     g_fontAuthor = MakeFont(L"Segoe UI", 8.0, 2, dpi);
-    g_fontOverlay = CreateOverlayFontFromSettings(g_settings, dpi);
+    g_fontOverlay = nullptr;
+    g_overlayFontDpi = 0;
 
     if (g_hwndIfaceLbl)   SendMessageW(g_hwndIfaceLbl, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_combo)          SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontCombo), TRUE);
@@ -207,9 +216,6 @@ static void RefreshFontsAndRelayout(int dpi) {
 
     if (g_brushBg) DeleteObject(g_brushBg);
     g_brushBg = CreateSolidBrush(CLR_BG);
-
-    if (g_brushOverlayBg) DeleteObject(g_brushOverlayBg);
-    g_brushOverlayBg = CreateSolidBrush(g_settings.bg);
 }
 
 // ---- Tray Icon Generation ----------------------------------------------------
@@ -300,6 +306,12 @@ static void UpdateTrayIcon() {
 }
 
 static void SetupTrayIcon() {
+    NOTIFYICONDATAW old = {};
+    old.cbSize = sizeof(old);
+    old.hWnd = g_hwndMain;
+    old.uID = 1;
+    Shell_NotifyIconW(NIM_DELETE, &old);
+
     if (g_hCurrentTrayIcon) {
         DestroyIcon(g_hCurrentTrayIcon);
         g_hCurrentTrayIcon = nullptr;
@@ -333,94 +345,64 @@ static void RemoveTrayIcon() {
 }
 
 // ---- Taskbar Overlay Widget --------------------------------------------------
+static bool GetTaskbarPosition(RECT* rect, UINT* edge) {
+    APPBARDATA data = {};
+    data.cbSize = sizeof(data);
+    if (!SHAppBarMessage(ABM_GETTASKBARPOS, &data) || IsRectEmpty(&data.rc)) {
+        return false;
+    }
+    if (data.uEdge != ABE_LEFT && data.uEdge != ABE_TOP &&
+        data.uEdge != ABE_RIGHT && data.uEdge != ABE_BOTTOM) {
+        return false;
+    }
+    *rect = data.rc;
+    *edge = data.uEdge;
+    return true;
+}
+
+static bool IsTaskbarShown(const RECT& expected, UINT edge) {
+    APPBARDATA state = {};
+    state.cbSize = sizeof(state);
+    if ((SHAppBarMessage(ABM_GETSTATE, &state) & ABS_AUTOHIDE) == 0) {
+        return true;
+    }
+
+    APPBARDATA query = {};
+    query.cbSize = sizeof(query);
+    query.uEdge = edge;
+    HWND taskbar = reinterpret_cast<HWND>(SHAppBarMessage(ABM_GETAUTOHIDEBAR, &query));
+    RECT actual = {};
+    RECT visible = {};
+    if (!taskbar || !GetWindowRect(taskbar, &actual) || !IntersectRect(&visible, &actual, &expected)) {
+        return false;
+    }
+
+    int expectedThickness = (edge == ABE_TOP || edge == ABE_BOTTOM)
+        ? expected.bottom - expected.top
+        : expected.right - expected.left;
+    int visibleThickness = (edge == ABE_TOP || edge == ABE_BOTTOM)
+        ? visible.bottom - visible.top
+        : visible.right - visible.left;
+    return visibleThickness * 2 >= expectedThickness;
+}
+
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        int dpi = static_cast<int>(GetDpiForWindow(hwnd));
-        if (dpi == 0) dpi = g_currentDpi;
-
-        // Fill background with settings color
-        HBRUSH hbg = CreateSolidBrush(g_settings.bg);
-        FillRect(hdc, &rc, hbg);
-        DeleteObject(hbg);
-
-        // Draw 1px border RGB(60,60,60)
-        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(60, 60, 60));
-        HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-        HBRUSH hOldBrush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
-        Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-        SelectObject(hdc, hOldBrush);
-        SelectObject(hdc, hOldPen);
-        DeleteObject(hPen);
-
-        HFONT hFont = CreateOverlayFontFromSettings(g_settings, dpi);
-        HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, hFont));
-        SetBkMode(hdc, TRANSPARENT);
-
-        int midY = (rc.bottom - rc.top) / 2;
-
-        // Down row: arrow + speed
-        wchar_t downText[128];
-        swprintf_s(downText, _countof(downText), L"\u2193  %s", g_szDownSpeed);
-        SetTextColor(hdc, g_settings.down);
-        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(2, dpi),
-                        rc.right - ScaleDpi(5, dpi), midY };
-        DrawTextW(hdc, downText, -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        // Up row: arrow + speed
-        wchar_t upText[128];
-        swprintf_s(upText, _countof(upText), L"\u2191  %s", g_szUpSpeed);
-        SetTextColor(hdc, g_settings.up);
-        RECT rcUp = { rc.left + ScaleDpi(5, dpi), midY,
-                      rc.right - ScaleDpi(5, dpi), rc.bottom - ScaleDpi(2, dpi) };
-        DrawTextW(hdc, upText, -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        SelectObject(hdc, hOldFont);
-        DeleteObject(hFont);
-
+        BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
+        PositionTaskbarOverlay();
         return 0;
     }
-    case WM_DPICHANGED: {
-        RECT* prc = reinterpret_cast<RECT*>(lp);
-        SetWindowPos(hwnd, HWND_TOPMOST, prc->left, prc->top,
-                     prc->right - prc->left, prc->bottom - prc->top,
-                     SWP_NOACTIVATE | SWP_NOZORDER);
-        InvalidateRect(hwnd, nullptr, TRUE);
+    case WM_DPICHANGED:
+        PostMessageW(hwnd, WM_OVERLAY_REFRESH, 0, 0);
         return 0;
-    }
-    case WM_LBUTTONDOWN: {
-        SetCapture(hwnd);
-        g_overlayDragging = true;
-        GetCursorPos(&g_overlayDragOffset);
-        RECT rc;
-        GetWindowRect(hwnd, &rc);
-        g_overlayDragOffset.x -= rc.left;
-        g_overlayDragOffset.y -= rc.top;
+    case WM_OVERLAY_REFRESH:
+        PositionTaskbarOverlay();
         return 0;
-    }
-    case WM_MOUSEMOVE: {
-        if (g_overlayDragging) {
-            POINT pt;
-            GetCursorPos(&pt);
-            SetWindowPos(hwnd, HWND_TOPMOST, pt.x - g_overlayDragOffset.x, pt.y - g_overlayDragOffset.y,
-                         0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP: {
-        if (g_overlayDragging) {
-            ReleaseCapture();
-            g_overlayDragging = false;
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        return 0;
-    }
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
     case WM_LBUTTONDBLCLK:
         ShowMainWindow();
         return 0;
@@ -433,55 +415,89 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
 
-    HWND hwndRef = (g_hwndOverlay && IsWindowVisible(g_hwndOverlay)) ? g_hwndOverlay : g_hwndMain;
-    if (!hwndRef) hwndRef = g_hwndOverlay;
-    HMONITOR hMon = MonitorFromWindow(hwndRef, MONITOR_DEFAULTTONEAREST);
-
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(hMon, &mi)) {
-        mi.rcMonitor = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mi.rcWork, 0);
+    RECT taskbar = {};
+    UINT edge = ABE_BOTTOM;
+    if (!GetTaskbarPosition(&taskbar, &edge)) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
+    }
+    if (!IsTaskbarShown(taskbar, edge)) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
     }
 
     int dpi = static_cast<int>(GetDpiForWindow(g_hwndOverlay));
     if (dpi == 0) dpi = g_currentDpi;
+    RECT target = CalculateTaskbarOverlayRect(taskbar, edge, static_cast<UINT>(dpi));
+    int width = target.right - target.left;
+    int height = target.bottom - target.top;
+    int stride = width * 4;
 
-    int w = ScaleDpi(120, dpi);
-    int h = ScaleDpi(40, dpi);
-    int x = 0, y = 0;
-
-    RECT rcWork = mi.rcWork;
-    RECT rcMon = mi.rcMonitor;
-
-    if (rcWork.bottom < rcMon.bottom) {
-        // Taskbar at bottom
-        x = rcMon.right - w - ScaleDpi(350, dpi);
-        y = rcWork.bottom + ScaleDpi(3, dpi);
-    } else if (rcWork.top > rcMon.top) {
-        // Taskbar at top
-        x = rcMon.right - w - ScaleDpi(350, dpi);
-        y = rcMon.top + ScaleDpi(3, dpi);
-    } else if (rcWork.right < rcMon.right) {
-        // Taskbar on right: immediately left of taskbar inside work area
-        x = rcWork.right - w - ScaleDpi(5, dpi);
-        y = rcMon.bottom - h - ScaleDpi(50, dpi);
-    } else if (rcWork.left > rcMon.left) {
-        // Taskbar on left: immediately right of taskbar inside work area
-        x = rcWork.left + ScaleDpi(5, dpi);
-        y = rcMon.bottom - h - ScaleDpi(50, dpi);
-    } else {
-        // Fallback default
-        x = rcWork.right - w - ScaleDpi(350, dpi);
-        y = rcWork.bottom - h - ScaleDpi(5, dpi);
+    HDC screen = GetDC(nullptr);
+    if (!screen) return;
+    HDC memory = CreateCompatibleDC(screen);
+    if (!memory) {
+        ReleaseDC(nullptr, screen);
+        return;
     }
 
-    // Keep within monitor bounds
-    if (x < rcMon.left) x = rcMon.left;
-    if (x + w > rcMon.right) x = rcMon.right - w;
-    if (y < rcMon.top) y = rcMon.top;
-    if (y + h > rcMon.bottom) y = rcMon.bottom - h;
+    BITMAPINFO bitmapInfo = {};
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = width;
+    bitmapInfo.bmiHeader.biHeight = -height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    SetWindowPos(g_hwndOverlay, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screen, &bitmapInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memory);
+        ReleaseDC(nullptr, screen);
+        return;
+    }
+
+    HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memory, bitmap));
+    memset(bits, 0, static_cast<size_t>(stride) * static_cast<size_t>(height));
+    HFONT font = GetOverlayFont(dpi);
+    HFONT oldFont = font ? static_cast<HFONT>(SelectObject(memory, font)) : nullptr;
+    SetBkMode(memory, TRANSPARENT);
+    SetTextColor(memory, RGB(255, 255, 255));
+
+    const int middle = height / 2;
+    int padding = ScaleDpi(4, dpi);
+    if (padding * 2 >= width) padding = 0;
+    wchar_t upText[128] = {};
+    wchar_t downText[128] = {};
+    swprintf_s(upText, L"\u2191  %s", g_szUpSpeed);
+    swprintf_s(downText, L"\u2193  %s", g_szDownSpeed);
+    RECT upRect = { padding, 0, width - padding, middle };
+    RECT downRect = { padding, middle, width - padding, height };
+    const UINT textFlags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    DrawTextW(memory, upText, -1, &upRect, textFlags);
+    DrawTextW(memory, downText, -1, &downRect, textFlags);
+    GdiFlush();
+    ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, middle,
+                      g_settings.up, g_settings.down);
+
+    POINT destination = { target.left, target.top };
+    POINT source = { 0, 0 };
+    SIZE size = { width, height };
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    BOOL updated = UpdateLayeredWindow(g_hwndOverlay, screen, &destination, &size,
+                                       memory, &source, 0, &blend, ULW_ALPHA);
+
+    if (oldFont) SelectObject(memory, oldFont);
+    SelectObject(memory, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+
+    if (updated) {
+        SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
 }
 
 static void CreateOrUpdateOverlay() {
@@ -494,6 +510,10 @@ static void CreateOrUpdateOverlay() {
     }
 
     if (!g_hwndOverlay) {
+        RECT taskbar = {};
+        UINT edge = ABE_BOTTOM;
+        if (!GetTaskbarPosition(&taskbar, &edge)) return;
+
         wchar_t cls[] = L"WinNetMeterOverlay";
         WNDCLASSEXW wc = { sizeof(wc) };
         wc.style = CS_DBLCLKS;
@@ -504,18 +524,16 @@ static void CreateOrUpdateOverlay() {
         RegisterClassExW(&wc);
 
         g_hwndOverlay = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             cls, nullptr, WS_POPUP,
-            0, 0, ScaleDpi(120, g_currentDpi), ScaleDpi(40, g_currentDpi),
+            taskbar.left, taskbar.top, 1, 1,
             nullptr, nullptr, g_hInst, nullptr);
 
         if (g_hwndOverlay) {
-            SetLayeredWindowAttributes(g_hwndOverlay, 0, static_cast<BYTE>(0.85 * 255), LWA_ALPHA);
             PositionTaskbarOverlay();
-            ShowWindow(g_hwndOverlay, SW_SHOWNOACTIVATE);
         }
     } else {
-        InvalidateRect(g_hwndOverlay, nullptr, TRUE);
+        PositionTaskbarOverlay();
     }
 }
 
@@ -538,9 +556,7 @@ static void OnTimerTick() {
         if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
         if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
         UpdateTrayIcon();
-        if (g_hwndOverlay && g_settings.showWidget) {
-            InvalidateRect(g_hwndOverlay, nullptr, FALSE);
-        }
+        CreateOrUpdateOverlay();
         return;
     }
 
@@ -578,9 +594,7 @@ static void OnTimerTick() {
 
     UpdateTrayIcon();
 
-    if (g_hwndOverlay && g_settings.showWidget) {
-        InvalidateRect(g_hwndOverlay, nullptr, FALSE);
-    }
+    CreateOrUpdateOverlay();
 }
 
 static void OnComboSelectionChanged() {
@@ -660,7 +674,7 @@ static void PopulateAdapters(bool isInitialStartup) {
 
 static void ShowMainWindow() {
     if (g_hwndMain) {
-        ShowWindow(g_hwndMain, SW_RESTORE);
+        ShowWindow(g_hwndMain, IsIconic(g_hwndMain) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(g_hwndMain);
     }
 }
@@ -670,7 +684,6 @@ struct SettingsDialogState {
     AppSettings tempSettings;
     HWND hwndDlg = nullptr;
     HWND hwndPreview = nullptr;
-    HWND hwndLblBg = nullptr, hwndBtnBg = nullptr;
     HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
     HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
@@ -728,17 +741,15 @@ static void RelayoutSettingsDialog(SettingsDialogState* state, int dpi) {
         HWND hwnd;
         int x, y, w, h;
     } items[] = {
-        { state->hwndLblBg,     20,  20, 140, 25 },
-        { state->hwndBtnBg,    170,  16,  80, 25 },
-        { state->hwndLblDown,   20,  55, 140, 25 },
-        { state->hwndBtnDown,  170,  51,  80, 25 },
-        { state->hwndLblUp,     20,  90, 140, 25 },
-        { state->hwndBtnUp,    170,  86,  80, 25 },
-        { state->hwndLblFont,   20, 125, 140, 25 },
-        { state->hwndBtnFont,  170, 121,  80, 25 },
+        { state->hwndLblDown,   20,  20, 140, 25 },
+        { state->hwndBtnDown,  170,  16,  80, 25 },
+        { state->hwndLblUp,     20,  55, 140, 25 },
+        { state->hwndBtnUp,    170,  51,  80, 25 },
+        { state->hwndLblFont,   20,  90, 140, 25 },
+        { state->hwndBtnFont,  170,  86,  80, 25 },
         { state->hwndPreview,  270,  16, 120, 80 },
-        { state->hwndBtnSave,  230, 170,  75, 28 },
-        { state->hwndBtnCancel,315, 170,  75, 28 },
+        { state->hwndBtnSave,  230, 140,  75, 28 },
+        { state->hwndBtnCancel,315, 140,  75, 28 },
     };
 
     for (const auto& it : items) {
@@ -767,13 +778,10 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
 
         int dpi = state ? state->dpi : 96;
 
-        COLORREF bg = state ? state->tempSettings.bg : RGB(30, 30, 30);
         COLORREF down = state ? state->tempSettings.down : RGB(0, 255, 100);
         COLORREF up = state ? state->tempSettings.up : RGB(255, 180, 0);
 
-        HBRUSH hbg = CreateSolidBrush(bg);
-        FillRect(hdc, &rc, hbg);
-        DeleteObject(hbg);
+        FillRect(hdc, &rc, g_brushBg);
 
         // Draw border
         HPEN hPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
@@ -788,15 +796,15 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
         HFONT hOldFont = hFont ? static_cast<HFONT>(SelectObject(hdc, hFont)) : nullptr;
         SetBkMode(hdc, TRANSPARENT);
 
-        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(8, dpi),
-                        rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(32, dpi) };
-        SetTextColor(hdc, down);
-        DrawTextW(hdc, L"\u2193  0.00 KB/s", -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        RECT rcUp = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(40, dpi),
-                      rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(64, dpi) };
+        RECT rcUp = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(8, dpi),
+                      rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(32, dpi) };
         SetTextColor(hdc, up);
         DrawTextW(hdc, L"\u2191  0.00 KB/s", -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(40, dpi),
+                        rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(64, dpi) };
+        SetTextColor(hdc, down);
+        DrawTextW(hdc, L"\u2193  0.00 KB/s", -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         if (hFont) {
             SelectObject(hdc, hOldFont);
@@ -833,9 +841,6 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             return CreateWindowExW(0, L"STATIC", txt, WS_CHILD | WS_VISIBLE | SS_LEFT,
                                   0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
         };
-
-        state->hwndLblBg = mkLbl(L"Overlay Background:", ID_SET_BG_LBL);
-        state->hwndBtnBg = mkBtn(L"Select", ID_SET_BG_BTN);
 
         state->hwndLblDown = mkLbl(L"Download Color:", ID_SET_DOWN_LBL);
         state->hwndBtnDown = mkBtn(L"Select", ID_SET_DOWN_BTN);
@@ -881,10 +886,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     }
     case WM_COMMAND: {
         int id = LOWORD(wp);
-        if (id == ID_SET_BG_BTN && state) {
-            state->tempSettings.bg = PickColor(hwnd, state->tempSettings.bg);
-            InvalidateRect(state->hwndPreview, nullptr, TRUE);
-        } else if (id == ID_SET_DOWN_BTN && state) {
+        if (id == ID_SET_DOWN_BTN && state) {
             state->tempSettings.down = PickColor(hwnd, state->tempSettings.down);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
         } else if (id == ID_SET_UP_BTN && state) {
@@ -942,7 +944,7 @@ static void OpenSettingsDialog() {
     RegisterClassExW(&wc);
 
     int w = ScaleDpi(420, g_currentDpi);
-    int h = ScaleDpi(260, g_currentDpi);
+    int h = ScaleDpi(230, g_currentDpi);
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
@@ -957,10 +959,11 @@ static void OpenSettingsDialog() {
 
     EnableWindow(g_hwndMain, FALSE);
 
-    MSG msg;
-    while (IsWindow(hwndDlg) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.message == WM_QUIT) {
-            PostQuitMessage(static_cast<int>(msg.wParam));
+    MSG msg = {};
+    while (IsWindow(hwndDlg)) {
+        BOOL result = GetMessageW(&msg, nullptr, 0, 0);
+        if (result <= 0) {
+            PostQuitMessage(result == 0 ? static_cast<int>(msg.wParam) : 1);
             break;
         }
         if (!IsDialogMessageW(hwndDlg, &msg)) {
@@ -969,17 +972,17 @@ static void OpenSettingsDialog() {
         }
     }
 
-    EnableWindow(g_hwndMain, TRUE);
-    SetForegroundWindow(g_hwndMain);
+    if (IsWindow(g_hwndMain)) {
+        EnableWindow(g_hwndMain, TRUE);
+        if (IsWindowVisible(g_hwndMain)) SetForegroundWindow(g_hwndMain);
+    }
 }
 
 // ---- Main Window Procedure ---------------------------------------------------
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_uTaskbarCreatedMsg && g_uTaskbarCreatedMsg != 0) {
         SetupTrayIcon();
-        if (g_hwndOverlay && g_settings.showWidget) {
-            PositionTaskbarOverlay();
-        }
+        CreateOrUpdateOverlay();
         return 0;
     }
 
@@ -1074,9 +1077,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DISPLAYCHANGE:
     case WM_SETTINGCHANGE: {
-        if (g_hwndOverlay && g_settings.showWidget) {
-            PositionTaskbarOverlay();
-        }
+        CreateOrUpdateOverlay();
         return 0;
     }
     case WM_TRAYICON: {
@@ -1105,12 +1106,6 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SaveSettings(&g_settings);
                 CreateOrUpdateOverlay();
             } else if (cmd == ID_TRAY_EXIT) {
-                KillTimer(hwnd, ID_TIMER);
-                RemoveTrayIcon();
-                if (g_hwndOverlay) {
-                    DestroyWindow(g_hwndOverlay);
-                    g_hwndOverlay = nullptr;
-                }
                 DestroyWindow(hwnd);
             }
         } else if (lp == WM_LBUTTONDBLCLK) {
@@ -1128,7 +1123,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CLOSE:
-        ShowWindow(hwnd, SW_MINIMIZE);
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    case WM_SIZE:
+        if (wp == SIZE_MINIMIZED) {
+            ShowWindow(hwnd, SW_HIDE);
+        }
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);
@@ -1144,6 +1144,20 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
+    HANDLE singleInstance = CreateMutexW(nullptr, TRUE, SINGLE_INSTANCE_MUTEX);
+    if (!singleInstance) {
+        return 1;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(singleInstance);
+        HWND existing = FindWindowW(MAIN_WINDOW_CLASS, nullptr);
+        if (existing && IsWindowVisible(existing)) {
+            ShowWindowAsync(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+        }
+        return 0;
+    }
+
     g_hInst = hInst;
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1153,13 +1167,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     LoadSettings(&g_settings);
 
-    wchar_t cls[] = L"WinNetMeterMain";
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = hInst;
     wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = cls;
+    wc.lpszClassName = MAIN_WINDOW_CLASS;
     RegisterClassExW(&wc);
 
     HDC hdcScreen = GetDC(nullptr);
@@ -1171,21 +1184,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    HWND hwnd = CreateWindowExW(0, cls, L"WinNetMeter",
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, MAIN_WINDOW_CLASS, L"WinNetMeter",
                                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                 x, y, w, h, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) {
+        ReleaseMutex(singleInstance);
+        CloseHandle(singleInstance);
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
-
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    MSG msg = {};
+    BOOL result = 0;
+    while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (result == -1 && IsWindow(hwnd)) DestroyWindow(hwnd);
 
     // Cleanup resources
     if (g_fontLabel) DeleteObject(g_fontLabel);
@@ -1194,7 +1208,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     if (g_fontAuthor) DeleteObject(g_fontAuthor);
     if (g_fontOverlay) DeleteObject(g_fontOverlay);
     if (g_brushBg) DeleteObject(g_brushBg);
-    if (g_brushOverlayBg) DeleteObject(g_brushOverlayBg);
+    ReleaseMutex(singleInstance);
+    CloseHandle(singleInstance);
 
-    return static_cast<int>(msg.wParam);
+    return result == -1 ? 1 : static_cast<int>(msg.wParam);
 }
