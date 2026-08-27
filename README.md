@@ -29,7 +29,7 @@ Built in modern C++20 for 64-bit Windows 10 and 11, it operates entirely via nat
 - **Live Speed Monitoring**: Real-time upload and download speeds and session totals for physical (Ethernet, Wi-Fi) and VPN/virtual network adapters.
 - **Taskbar-Attached Meter**: Compact, transparent, non-activating overlay that follows the documented system-taskbar rectangle and DPI, with a signed taskbar-relative position offset in Settings.
 - **Dynamic System Tray Icon**: Generates real-time speed icons in the notification area with leak-free GDI handle lifecycle management.
-- **Customizable Appearance**: Settings dialog to customize download/upload text colors, font family, font size, and full font styles (Bold, Italic, Underline, Strikeout).
+- **Customizable Appearance**: Settings dialog to choose a minimum throughput unit, 0/1/2 decimal places, download/upload text colors, and overlay font styling. Fresh configurations use white speed text by default.
 
 ---
 
@@ -98,7 +98,7 @@ run_tests.bat
 ```
 
 ### Verified Test Cases
-- **Speed & Byte Formatting**: Exact string representation for bps, KB/s, MB/s, GB/s, and compact tray strings.
+- **Speed & Byte Formatting**: Exact representation and rounding for adaptive or minimum-unit B/s, KB/s, MB/s, and GB/s displays, plus independent byte totals and compact tray strings.
 - **Monotonic Timing**: Monotonic throughput calculation using actual high-resolution clock deltas.
 - **64-bit Counter Accumulation & Wrap**: Correct delta calculations with 64-bit counters exceeding 4 GB.
 - **Adapter Rebind & Fallback**: Proof that interface reconnection with a new LUID establishes a zero-speed baseline without spikes, preserves totals, and never falls back to an unrelated adapter.
@@ -126,8 +126,10 @@ FontSize=8.0
 FontStyle=1
 ShowWidget=1
 TaskbarOffset=0
-DownloadColor=5463040
-UploadColor=47615
+MinimumSpeedUnit=Auto
+DecimalPlaces=2
+DownloadColor=16777215
+UploadColor=16777215
 ```
 
 ---

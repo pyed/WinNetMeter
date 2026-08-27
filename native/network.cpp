@@ -1,18 +1,37 @@
 #include "network.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <cmath>
 #include <cwchar>
 
-void FormatSpeed(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
-    if (bytesPerSecond < 1024) {
-        swprintf_s(out, maxLen, L"%llu B/s", static_cast<unsigned long long>(bytesPerSecond));
-    } else if (bytesPerSecond < 1024ULL * 1024) {
-        swprintf_s(out, maxLen, L"%.2f KB/s", static_cast<double>(bytesPerSecond) / 1024.0);
-    } else if (bytesPerSecond < 1024ULL * 1024 * 1024) {
-        swprintf_s(out, maxLen, L"%.2f MB/s", static_cast<double>(bytesPerSecond) / (1024.0 * 1024.0));
-    } else {
-        swprintf_s(out, maxLen, L"%.2f GB/s", static_cast<double>(bytesPerSecond) / (1024.0 * 1024.0 * 1024.0));
+void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
+                 int decimalPlaces, wchar_t* out, size_t maxLen) {
+    int unit = 0;
+    if (bytesPerSecond >= 1024ULL * 1024 * 1024) {
+        unit = 3;
+    } else if (bytesPerSecond >= 1024ULL * 1024) {
+        unit = 2;
+    } else if (bytesPerSecond >= 1024) {
+        unit = 1;
     }
+
+    int floor = static_cast<int>(minimumUnit);
+    if (floor < 0 || floor > 3) floor = 0;
+    if (floor > unit) unit = floor;
+
+    if (unit == 0) {
+        swprintf_s(out, maxLen, L"%llu B/s", static_cast<unsigned long long>(bytesPerSecond));
+        return;
+    }
+
+    static constexpr double divisors[] = { 1.0, 1024.0, 1024.0 * 1024.0,
+                                           1024.0 * 1024.0 * 1024.0 };
+    static constexpr const wchar_t* suffixes[] = { L"B/s", L"KB/s", L"MB/s", L"GB/s" };
+    int precision = ClampSpeedDecimalPlaces(decimalPlaces);
+    double scale = precision == 0 ? 1.0 : (precision == 1 ? 10.0 : 100.0);
+    double value = static_cast<double>(bytesPerSecond) / divisors[unit];
+    value = std::round(value * scale) / scale;
+    swprintf_s(out, maxLen, L"%.*f %s", precision, value, suffixes[unit]);
 }
 
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen) {

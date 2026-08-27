@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
-                 'ResourceLeak')]
+                 'ResourceLeak', 'FormattingDisplay')]
     [string]$Check
 )
 
@@ -82,6 +82,10 @@ public static class WinNetMeterNative
     public static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int maxCount);
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")]
@@ -174,14 +178,14 @@ function Wait-AppWindows([System.Diagnostics.Process]$Process) {
     throw 'Timed out waiting for WinNetMeter host and overlay windows'
 }
 
-function Start-TestApp {
+function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n") {
     Assert-True (@(Get-RunningAppProcesses).Count -eq 0) 'A WinNetMeter process from this build is already running'
     $settingsExisted = Test-Path -LiteralPath $settingsPath
     $settingsBytes = if ($settingsExisted) { [IO.File]::ReadAllBytes($settingsPath) } else { $null }
     $settingsDirectory = Split-Path -Parent $settingsPath
     $directoryExisted = Test-Path -LiteralPath $settingsDirectory
     [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
-    [IO.File]::WriteAllText($settingsPath, "[Overlay]`r`nShowWidget=1`r`n")
+    [IO.File]::WriteAllText($settingsPath, $SettingsContent)
 
     $process = $null
     try {
@@ -292,7 +296,12 @@ if ($Check -eq 'Imports') {
     exit 0
 }
 
-$session = Start-TestApp
+$testSettings = if ($Check -eq 'FormattingDisplay') {
+    "[Overlay]`r`nShowWidget=1`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`n"
+} else {
+    "[Overlay]`r`nShowWidget=1`r`n"
+}
+$session = Start-TestApp $testSettings
 try {
     switch ($Check) {
         'SingleInstance' {
@@ -440,7 +449,22 @@ try {
             $userAfter = [WinNetMeterNative]::GetGuiResources($session.Process.Handle, 1)
             Assert-True ($gdiAfter -eq $gdiBefore) "GDI objects changed: $gdiBefore -> $gdiAfter"
             Assert-True ($userAfter -eq $userBefore) "User objects changed: $userBefore -> $userAfter"
+            "RESOURCE_COUNTS GDI=$gdiBefore->$gdiAfter USER=$userBefore->$userAfter"
             'RESOURCE_LIFETIME_OK'
+        }
+        'FormattingDisplay' {
+            $main = Get-AppWindow $session 'WinNetMeterMain'
+            $down = [WinNetMeterNative]::GetDlgItem($main.Handle, 102)
+            $up = [WinNetMeterNative]::GetDlgItem($main.Handle, 103)
+            Assert-True ($down -ne [IntPtr]::Zero -and $up -ne [IntPtr]::Zero) 'Speed value controls were not found'
+
+            foreach ($control in @($down, $up)) {
+                $text = New-Object Text.StringBuilder 64
+                [void][WinNetMeterNative]::GetWindowTextW($control, $text, $text.Capacity)
+                Assert-True ($text.ToString() -match '^\d+\.\d (MB|GB)/s$') "Unexpected configured speed text: $text"
+            }
+
+            'FORMATTING_DISPLAY_OK'
         }
     }
 } finally {

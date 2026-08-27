@@ -13,13 +13,21 @@ static std::wstring GetDefaultSettingsPath() {
     return L"settings.ini";
 }
 
-bool ParseTaskbarMeterOffset(const wchar_t* text, int* value) {
+static bool ParseInteger(const wchar_t* text, long* value) {
     if (!text || !value) return false;
     wchar_t* end = nullptr;
     errno = 0;
     long parsed = wcstol(text, &end, 10);
     while (end && (*end == L' ' || *end == L'\t')) ++end;
     if (end == text || !end || *end != L'\0' || errno == ERANGE) return false;
+    *value = parsed;
+    return true;
+}
+
+bool ParseTaskbarMeterOffset(const wchar_t* text, int* value) {
+    if (!value) return false;
+    long parsed = 0;
+    if (!ParseInteger(text, &parsed)) return false;
     *value = ClampTaskbarMeterOffset(static_cast<int>(parsed));
     return true;
 }
@@ -41,6 +49,21 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     GetPrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"", num, _countof(num), filePath);
     int taskbarOffset = 0;
     if (ParseTaskbarMeterOffset(num, &taskbarOffset)) s->taskbarOffset = taskbarOffset;
+
+    GetPrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"Auto", num, _countof(num), filePath);
+    if (_wcsicmp(num, L"KB/s") == 0) {
+        s->minimumSpeedUnit = MinimumSpeedUnit::Kilobytes;
+    } else if (_wcsicmp(num, L"MB/s") == 0) {
+        s->minimumSpeedUnit = MinimumSpeedUnit::Megabytes;
+    } else if (_wcsicmp(num, L"GB/s") == 0) {
+        s->minimumSpeedUnit = MinimumSpeedUnit::Gigabytes;
+    }
+
+    GetPrivateProfileStringW(L"Overlay", L"DecimalPlaces", L"", num, _countof(num), filePath);
+    long decimalPlaces = 0;
+    if (ParseInteger(num, &decimalPlaces)) {
+        s->decimalPlaces = ClampSpeedDecimalPlaces(static_cast<int>(decimalPlaces));
+    }
     
     s->down = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"DownloadColor", static_cast<DWORD>(s->down), filePath));
     s->up = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"UploadColor", static_cast<DWORD>(s->up), filePath));
@@ -62,6 +85,14 @@ void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
     WritePrivateProfileStringW(L"Overlay", L"ShowWidget", s->showWidget ? L"1" : L"0", filePath);
     swprintf_s(num, L"%d", ClampTaskbarMeterOffset(s->taskbarOffset));
     WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", num, filePath);
+
+    const wchar_t* minimumUnit = L"Auto";
+    if (s->minimumSpeedUnit == MinimumSpeedUnit::Kilobytes) minimumUnit = L"KB/s";
+    else if (s->minimumSpeedUnit == MinimumSpeedUnit::Megabytes) minimumUnit = L"MB/s";
+    else if (s->minimumSpeedUnit == MinimumSpeedUnit::Gigabytes) minimumUnit = L"GB/s";
+    WritePrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", minimumUnit, filePath);
+    swprintf_s(num, L"%d", ClampSpeedDecimalPlaces(s->decimalPlaces));
+    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", num, filePath);
 
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
     WritePrivateProfileStringW(L"Overlay", L"DownloadColor", num, filePath);

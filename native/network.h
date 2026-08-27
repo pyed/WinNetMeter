@@ -4,6 +4,7 @@
 #include <ws2ipdef.h>
 #include <windows.h>
 #include <iphlpapi.h>
+#include "settings.h"
 
 // Interface types
 enum {
@@ -24,7 +25,8 @@ struct AdapterInfo {
 };
 
 // Formatting utilities matching C# Formatting.cs
-void FormatSpeed(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
+void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
+                 int decimalPlaces, wchar_t* out, size_t maxLen);
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen);
 void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
 

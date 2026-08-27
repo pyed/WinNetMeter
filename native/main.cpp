@@ -56,12 +56,14 @@ enum {
     ID_SET_OFFSET_SPIN = 2014,
     ID_SET_OFFSET_UNIT = 2015,
     ID_SET_OFFSET_RESET = 2016,
+    ID_SET_UNIT_LBL = 2017,
+    ID_SET_UNIT_COMBO = 2018,
+    ID_SET_DECIMALS_LBL = 2019,
+    ID_SET_DECIMALS_COMBO = 2020,
 };
 
 // Colors
 static const COLORREF CLR_BG = RGB(20, 20, 20);
-static const COLORREF CLR_DOWN = RGB(0, 200, 83);     // #00C853 (Green)
-static const COLORREF CLR_UP = RGB(255, 185, 0);      // #FFB900 (Orange)
 static const COLORREF CLR_LABEL = RGB(211, 211, 211); // LightGray
 static const COLORREF CLR_WHITE = RGB(255, 255, 255);
 static const COLORREF CLR_GRAY = RGB(128, 128, 128);
@@ -108,10 +110,12 @@ static int g_currentDpi = 96;
 static int g_overlayFontDpi = 0;
 
 // Overlay speed strings
-static wchar_t g_szDownSpeed[64] = L"0.00 KB/s";
-static wchar_t g_szUpSpeed[64] = L"0.00 KB/s";
+static wchar_t g_szDownSpeed[64] = L"";
+static wchar_t g_szUpSpeed[64] = L"";
 static wchar_t g_szDownCompact[32] = L"0B";
 static wchar_t g_szUpCompact[32] = L"0B";
+static ULONGLONG g_currentDownBps = 0;
+static ULONGLONG g_currentUpBps = 0;
 
 // Forward declarations
 static void ShowMainWindow();
@@ -226,6 +230,20 @@ static void RefreshFontsAndRelayout(int dpi) {
     g_brushBg = CreateSolidBrush(CLR_BG);
 }
 
+static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
+    g_currentDownBps = downBps;
+    g_currentUpBps = upBps;
+    FormatSpeed(downBps, g_settings.minimumSpeedUnit, g_settings.decimalPlaces,
+                g_szDownSpeed, _countof(g_szDownSpeed));
+    FormatSpeed(upBps, g_settings.minimumSpeedUnit, g_settings.decimalPlaces,
+                g_szUpSpeed, _countof(g_szUpSpeed));
+    FormatCompact(downBps, g_szDownCompact, _countof(g_szDownCompact));
+    FormatCompact(upBps, g_szUpCompact, _countof(g_szUpCompact));
+
+    if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, g_szDownSpeed);
+    if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, g_szUpSpeed);
+}
+
 // ---- Tray Icon Generation ----------------------------------------------------
 static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpeed) {
     const int w = 16;
@@ -260,12 +278,12 @@ static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpee
 
     SetBkMode(hdcMem, TRANSPARENT);
 
-    // Download speed (top half) - green
+    // Download speed (top half) - configured color
     SetTextColor(hdcMem, g_settings.down);
     RECT rcDown = { 0, 0, w, h / 2 };
     DrawTextW(hdcMem, downSpeed, -1, &rcDown, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // Upload speed (bottom half) - orange
+    // Upload speed (bottom half) - configured color
     SetTextColor(hdcMem, g_settings.up);
     RECT rcUp = { 0, h / 2, w, h };
     DrawTextW(hdcMem, upSpeed, -1, &rcUp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -580,12 +598,7 @@ static void OnTimerTick() {
     }
 
     if (g_selectedLuid.Value == 0) {
-        wcscpy_s(g_szDownSpeed, L"0.00 KB/s");
-        wcscpy_s(g_szUpSpeed, L"0.00 KB/s");
-        wcscpy_s(g_szDownCompact, L"0B");
-        wcscpy_s(g_szUpCompact, L"0B");
-        if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
-        if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
+        UpdateSpeedValues(0, 0);
         UpdateTrayIcon();
         CreateOrUpdateOverlay();
         return;
@@ -593,13 +606,7 @@ static void OnTimerTick() {
 
     ULONGLONG downBps = 0, upBps = 0;
     if (g_sampler.Sample(g_selectedLuid, &downBps, &upBps)) {
-        FormatSpeed(downBps, g_szDownSpeed, _countof(g_szDownSpeed));
-        FormatSpeed(upBps, g_szUpSpeed, _countof(g_szUpSpeed));
-        FormatCompact(downBps, g_szDownCompact, _countof(g_szDownCompact));
-        FormatCompact(upBps, g_szUpCompact, _countof(g_szUpCompact));
-
-        if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, g_szDownSpeed);
-        if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, g_szUpSpeed);
+        UpdateSpeedValues(downBps, upBps);
 
         wchar_t totalBuf[64];
         FormatBytes(g_sampler.totalIn, totalBuf, _countof(totalBuf));
@@ -615,12 +622,7 @@ static void OnTimerTick() {
             PopulateAdapters(false);
         }
 
-        wcscpy_s(g_szDownSpeed, L"0.00 KB/s");
-        wcscpy_s(g_szUpSpeed, L"0.00 KB/s");
-        wcscpy_s(g_szDownCompact, L"0B");
-        wcscpy_s(g_szUpCompact, L"0B");
-        if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
-        if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
+        UpdateSpeedValues(0, 0);
     }
 
     UpdateTrayIcon();
@@ -636,10 +638,11 @@ static void OnComboSelectionChanged() {
         if (luid.Value != g_selectedLuid.Value) {
             g_selectedLuid = luid;
             g_sampler.Reset(luid);
-            SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
-            SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
+            UpdateSpeedValues(0, 0);
             SetWindowTextW(g_hwndTotalDown, L"0 B");
             SetWindowTextW(g_hwndTotalUp, L"0 B");
+            UpdateTrayIcon();
+            CreateOrUpdateOverlay();
         }
     }
 }
@@ -720,6 +723,8 @@ struct SettingsDialogState {
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
     HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
     HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
+    HWND hwndLblUnit = nullptr, hwndComboUnit = nullptr;
+    HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
     HWND hwndBtnSave = nullptr, hwndBtnCancel = nullptr;
     HFONT hFontDlg = nullptr;
     int dpi = 96;
@@ -787,8 +792,12 @@ static void RelayoutSettingsDialog(SettingsDialogState* state, int dpi) {
         { state->hwndSpinOffset,235,121,  18, 25 },
         { state->hwndLblOffsetUnit,258,125,  25, 25 },
         { state->hwndBtnOffsetReset,300,121,90, 25 },
-        { state->hwndBtnSave,  230, 175,  75, 28 },
-        { state->hwndBtnCancel,315, 175,  75, 28 },
+        { state->hwndLblUnit,    20, 160, 145, 25 },
+        { state->hwndComboUnit, 170, 156, 130, 120 },
+        { state->hwndLblDecimals,20,195, 145, 25 },
+        { state->hwndComboDecimals,170,191,80,120 },
+        { state->hwndBtnSave,  230, 245,  75, 28 },
+        { state->hwndBtnCancel,315, 245,  75, 28 },
     };
 
     for (const auto& it : items) {
@@ -817,8 +826,8 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
 
         int dpi = state ? state->dpi : 96;
 
-        COLORREF down = state ? state->tempSettings.down : RGB(0, 255, 100);
-        COLORREF up = state ? state->tempSettings.up : RGB(255, 180, 0);
+        AppSettings previewSettings;
+        if (state) previewSettings = state->tempSettings;
 
         FillRect(hdc, &rc, g_brushBg);
 
@@ -837,13 +846,21 @@ static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, L
 
         RECT rcUp = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(8, dpi),
                       rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(32, dpi) };
-        SetTextColor(hdc, up);
-        DrawTextW(hdc, L"\u2191  0.00 KB/s", -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        wchar_t speed[64] = {};
+        wchar_t display[80] = {};
+        FormatSpeed(1547698, previewSettings.minimumSpeedUnit, previewSettings.decimalPlaces,
+                    speed, _countof(speed));
+        swprintf_s(display, L"\u2191  %s", speed);
+        SetTextColor(hdc, previewSettings.up);
+        DrawTextW(hdc, display, -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(40, dpi),
                         rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(64, dpi) };
-        SetTextColor(hdc, down);
-        DrawTextW(hdc, L"\u2193  0.00 KB/s", -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        FormatSpeed(512 * 1024, previewSettings.minimumSpeedUnit, previewSettings.decimalPlaces,
+                    speed, _countof(speed));
+        swprintf_s(display, L"\u2193  %s", speed);
+        SetTextColor(hdc, previewSettings.down);
+        DrawTextW(hdc, display, -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
         if (hFont) {
             SelectObject(hdc, hOldFont);
@@ -911,6 +928,31 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         SendMessageW(state->hwndSpinOffset, UDM_SETPOS32, 0,
                      static_cast<LPARAM>(state->tempSettings.taskbarOffset));
 
+        state->hwndLblUnit = mkLbl(L"Minimum speed unit:", ID_SET_UNIT_LBL);
+        state->hwndComboUnit = CreateWindowExW(
+            0, L"COMBOBOX", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+            0, 0, 0, 0, hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UNIT_COMBO)), g_hInst, nullptr);
+        const wchar_t* unitChoices[] = { L"Auto", L"KB/s", L"MB/s", L"GB/s" };
+        for (const wchar_t* choice : unitChoices) {
+            SendMessageW(state->hwndComboUnit, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice));
+        }
+        SendMessageW(state->hwndComboUnit, CB_SETCURSEL,
+                     static_cast<WPARAM>(state->tempSettings.minimumSpeedUnit), 0);
+
+        state->hwndLblDecimals = mkLbl(L"Decimal places:", ID_SET_DECIMALS_LBL);
+        state->hwndComboDecimals = CreateWindowExW(
+            0, L"COMBOBOX", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+            0, 0, 0, 0, hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_DECIMALS_COMBO)), g_hInst, nullptr);
+        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"0"));
+        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1"));
+        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"2"));
+        SendMessageW(state->hwndComboDecimals, CB_SETCURSEL,
+                     static_cast<WPARAM>(state->tempSettings.decimalPlaces), 0);
+
         wchar_t prevCls[] = L"SettingsPreviewPanel";
         WNDCLASSEXW pwc = { sizeof(pwc) };
         pwc.lpfnWndProc = SettingsPreviewWndProc;
@@ -958,6 +1000,18 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             }
         } else if (id == ID_SET_OFFSET_RESET && state) {
             SetWindowTextW(state->hwndEditOffset, L"0");
+        } else if (id == ID_SET_UNIT_COMBO && code == CBN_SELCHANGE && state) {
+            int selection = static_cast<int>(SendMessageW(state->hwndComboUnit, CB_GETCURSEL, 0, 0));
+            if (selection >= 0 && selection <= 3) {
+                state->tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(selection);
+                InvalidateRect(state->hwndPreview, nullptr, TRUE);
+            }
+        } else if (id == ID_SET_DECIMALS_COMBO && code == CBN_SELCHANGE && state) {
+            int selection = static_cast<int>(SendMessageW(state->hwndComboDecimals, CB_GETCURSEL, 0, 0));
+            if (selection >= SPEED_DECIMAL_PLACES_MIN && selection <= SPEED_DECIMAL_PLACES_MAX) {
+                state->tempSettings.decimalPlaces = selection;
+                InvalidateRect(state->hwndPreview, nullptr, TRUE);
+            }
         } else if (id == ID_SET_DOWN_BTN && state) {
             state->tempSettings.down = PickColor(hwnd, state->tempSettings.down);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
@@ -980,8 +1034,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             state->tempSettings.taskbarOffset = offset;
             g_settings = state->tempSettings;
             SaveSettings(&g_settings);
+            UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
             RefreshFontsAndRelayout(g_currentDpi);
+            UpdateTrayIcon();
             CreateOrUpdateOverlay();
+            InvalidateRect(g_hwndSpeedDown, nullptr, TRUE);
+            InvalidateRect(g_hwndSpeedUp, nullptr, TRUE);
             DestroyWindow(hwnd);
         } else if (id == ID_SET_CANCEL_BTN) {
             if (state) {
@@ -1035,7 +1093,7 @@ static void OpenSettingsDialog() {
     RegisterClassExW(&wc);
 
     int w = ScaleDpi(420, g_currentDpi);
-    int h = ScaleDpi(265, g_currentDpi);
+    int h = ScaleDpi(335, g_currentDpi);
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
@@ -1080,6 +1138,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
         g_hwndMain = hwnd;
+        UpdateSpeedValues(0, 0);
 
         auto mkLabel = [&](const wchar_t* text, int id, UINT ss) {
             return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | ss,
@@ -1097,10 +1156,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PopulateAdapters(true);
 
         g_hwndDownTitle = mkLabel(L"Download Speed:", ID_DOWN_TITLE, SS_LEFT);
-        g_hwndSpeedDown = mkLabel(L"0.00 KB/s", ID_SPEED_DOWN, SS_RIGHT);
+        g_hwndSpeedDown = mkLabel(g_szDownSpeed, ID_SPEED_DOWN, SS_RIGHT);
 
         g_hwndUpTitle = mkLabel(L"Upload Speed:", ID_UP_TITLE, SS_LEFT);
-        g_hwndSpeedUp = mkLabel(L"0.00 KB/s", ID_SPEED_UP, SS_RIGHT);
+        g_hwndSpeedUp = mkLabel(g_szUpSpeed, ID_SPEED_UP, SS_RIGHT);
 
         g_hwndTotdTitle = mkLabel(L"Total Downloaded:", ID_TOTD_TITLE, SS_LEFT);
         g_hwndTotalDown = mkLabel(L"0.00 MB", ID_TOTAL_DOWN, SS_RIGHT);
@@ -1122,8 +1181,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HDC hdc = reinterpret_cast<HDC>(wp);
         int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
         COLORREF c = CLR_LABEL;
-        if (id == ID_SPEED_DOWN) c = CLR_DOWN;
-        else if (id == ID_SPEED_UP) c = CLR_UP;
+        if (id == ID_SPEED_DOWN) c = g_settings.down;
+        else if (id == ID_SPEED_UP) c = g_settings.up;
         else if (id == ID_TOTAL_DOWN || id == ID_TOTAL_UP || id == ID_IFACE_LABEL) c = CLR_WHITE;
         else if (id == ID_AUTHOR_LINK) c = CLR_GRAY;
         SetTextColor(hdc, c);
