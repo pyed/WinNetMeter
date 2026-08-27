@@ -6,34 +6,76 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <limits.h>
 #include <string.h>
 #include <math.h>
 #include "../network.h"
 #include "../overlay.h"
 #include "../settings.h"
 
-// Test 1: Formatting exact parity with C#
-void TestFormatting() {
+static void AssertSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
+                        int decimalPlaces, const wchar_t* expected) {
     wchar_t buf[64];
+    FormatSpeed(bytesPerSecond, minimumUnit, decimalPlaces, buf, _countof(buf));
+    assert(wcscmp(buf, expected) == 0);
+}
 
-    // Speed formatting
-    FormatSpeed(0, buf, 64);
-    assert(wcscmp(buf, L"0 B/s") == 0);
+void TestSpeedFormatting() {
+    AssertSpeed(0, MinimumSpeedUnit::Auto, 2, L"0 B/s");
+    AssertSpeed(1, MinimumSpeedUnit::Auto, 2, L"1 B/s");
+    AssertSpeed(512, MinimumSpeedUnit::Auto, 2, L"512 B/s");
+    AssertSpeed(1024, MinimumSpeedUnit::Auto, 2, L"1.00 KB/s");
+    AssertSpeed(1536, MinimumSpeedUnit::Auto, 2, L"1.50 KB/s");
+    AssertSpeed(1048576, MinimumSpeedUnit::Auto, 2, L"1.00 MB/s");
+    AssertSpeed(1073741824ULL, MinimumSpeedUnit::Auto, 2, L"1.00 GB/s");
+    printf("PASS: TestSpeedFormattingAuto\n");
 
-    FormatSpeed(512, buf, 64);
-    assert(wcscmp(buf, L"512 B/s") == 0);
+    AssertSpeed(0, MinimumSpeedUnit::Kilobytes, 2, L"0.00 KB/s");
+    AssertSpeed(512, MinimumSpeedUnit::Kilobytes, 2, L"0.50 KB/s");
+    AssertSpeed(10 * 1024, MinimumSpeedUnit::Kilobytes, 2, L"10.00 KB/s");
+    printf("PASS: TestSpeedFormattingKilobyteFloor\n");
 
-    FormatSpeed(1024, buf, 64);
-    assert(wcscmp(buf, L"1.00 KB/s") == 0);
+    AssertSpeed(0, MinimumSpeedUnit::Megabytes, 2, L"0.00 MB/s");
+    AssertSpeed(512 * 1024, MinimumSpeedUnit::Megabytes, 2, L"0.50 MB/s");
+    AssertSpeed(5 * 1024 * 1024, MinimumSpeedUnit::Megabytes, 2, L"5.00 MB/s");
+    printf("PASS: TestSpeedFormattingMegabyteFloor\n");
 
-    FormatSpeed(1536, buf, 64);
-    assert(wcscmp(buf, L"1.50 KB/s") == 0);
+    AssertSpeed(0, MinimumSpeedUnit::Gigabytes, 2, L"0.00 GB/s");
+    AssertSpeed(100 * 1024 * 1024, MinimumSpeedUnit::Gigabytes, 2, L"0.10 GB/s");
+    printf("PASS: TestSpeedFormattingGigabyteFloor\n");
 
-    FormatSpeed(1048576, buf, 64);
-    assert(wcscmp(buf, L"1.00 MB/s") == 0);
+    AssertSpeed(2 * 1024 * 1024, MinimumSpeedUnit::Kilobytes, 2, L"2.00 MB/s");
+    AssertSpeed(2ULL * 1024 * 1024 * 1024, MinimumSpeedUnit::Megabytes, 2, L"2.00 GB/s");
+    printf("PASS: TestSpeedFormattingUpwardScaling\n");
 
-    FormatSpeed(1073741824ULL, buf, 64);
-    assert(wcscmp(buf, L"1.00 GB/s") == 0);
+    constexpr ULONGLONG approximatelyOnePointFourSevenSixMb = 1547698;
+    AssertSpeed(approximatelyOnePointFourSevenSixMb, MinimumSpeedUnit::Auto, 0, L"1 MB/s");
+    AssertSpeed(1677722, MinimumSpeedUnit::Auto, 0, L"2 MB/s");
+    AssertSpeed(512 * 1024, MinimumSpeedUnit::Megabytes, 0, L"1 MB/s");
+    printf("PASS: TestSpeedFormattingZeroDecimals\n");
+    AssertSpeed(approximatelyOnePointFourSevenSixMb, MinimumSpeedUnit::Auto, 1, L"1.5 MB/s");
+    AssertSpeed(1280 * 1024, MinimumSpeedUnit::Auto, 1, L"1.3 MB/s");
+    printf("PASS: TestSpeedFormattingOneDecimal\n");
+    AssertSpeed(approximatelyOnePointFourSevenSixMb, MinimumSpeedUnit::Auto, 2, L"1.48 MB/s");
+    AssertSpeed(1152 * 1024, MinimumSpeedUnit::Auto, 2, L"1.13 MB/s");
+    printf("PASS: TestSpeedFormattingTwoDecimals\n");
+
+    AssertSpeed(1023, MinimumSpeedUnit::Auto, 2, L"1023 B/s");
+    AssertSpeed(1024, MinimumSpeedUnit::Auto, 2, L"1.00 KB/s");
+    AssertSpeed(1048575, MinimumSpeedUnit::Auto, 2, L"1024.00 KB/s");
+    AssertSpeed(1048576, MinimumSpeedUnit::Auto, 2, L"1.00 MB/s");
+    AssertSpeed(1048577, MinimumSpeedUnit::Auto, 2, L"1.00 MB/s");
+    AssertSpeed(1073741823, MinimumSpeedUnit::Auto, 2, L"1024.00 MB/s");
+    AssertSpeed(1073741824, MinimumSpeedUnit::Auto, 2, L"1.00 GB/s");
+    AssertSpeed(1073741825, MinimumSpeedUnit::Auto, 2, L"1.00 GB/s");
+    printf("PASS: TestSpeedFormattingBoundaries\n");
+
+    AssertSpeed(ULLONG_MAX, MinimumSpeedUnit::Auto, 2, L"17179869184.00 GB/s");
+    printf("PASS: TestSpeedFormattingLargestValue\n");
+}
+
+void TestUnchangedIndependentFormatting() {
+    wchar_t buf[64];
 
     // Bytes formatting
     FormatBytes(0, buf, 64);
@@ -64,7 +106,7 @@ void TestFormatting() {
     FormatCompact(1073741824ULL, buf, 64);
     assert(wcscmp(buf, L"1G") == 0);
 
-    printf("PASS: TestFormatting\n");
+    printf("PASS: TestUnchangedIndependentFormatting\n");
 }
 
 // Test 2: NetSampler with mock updates (64-bit counters, monotonic timing, counter reset, wrap)
@@ -135,6 +177,8 @@ void TestSettings() {
     s1.fontSize = 11.5;
     s1.fontStyle = 15; // Bold(1) | Italic(2) | Underline(4) | Strikeout(8)
     s1.showWidget = 0;
+    s1.minimumSpeedUnit = MinimumSpeedUnit::Megabytes;
+    s1.decimalPlaces = 0;
 
     // Save to test file
     SaveSettingsCustom(&s1, L".\\test_settings.ini");
@@ -148,6 +192,8 @@ void TestSettings() {
     assert(fabs(s2.fontSize - s1.fontSize) < 0.01);
     assert(s2.fontStyle == s1.fontStyle);
     assert(s2.showWidget == s1.showWidget);
+    assert(s2.minimumSpeedUnit == s1.minimumSpeedUnit);
+    assert(s2.decimalPlaces == s1.decimalPlaces);
 
     DeleteFileW(L".\\test_settings.ini");
 
@@ -157,6 +203,121 @@ void TestSettings() {
     assert(wcsstr(defaultPath, L"\\WinNetMeter\\settings.ini") != nullptr);
 
     printf("PASS: TestSettings\n");
+}
+
+void TestSpeedFormattingSettings() {
+    const wchar_t* path = L".\\test_speed_formatting.ini";
+    DeleteFileW(path);
+
+    AppSettings defaults;
+    assert(defaults.minimumSpeedUnit == MinimumSpeedUnit::Auto);
+    assert(defaults.decimalPlaces == 2);
+    printf("PASS: TestSpeedFormattingSettingsDefaults\n");
+    assert(defaults.down == RGB(255, 255, 255));
+    assert(defaults.up == RGB(255, 255, 255));
+    printf("PASS: TestFreshColorDefaults\n");
+
+    const MinimumSpeedUnit units[] = {
+        MinimumSpeedUnit::Megabytes,
+        MinimumSpeedUnit::Kilobytes,
+        MinimumSpeedUnit::Auto,
+    };
+    const int decimals[] = { 0, 1, 2 };
+    for (size_t i = 0; i < _countof(units); ++i) {
+        AppSettings saved;
+        saved.minimumSpeedUnit = units[i];
+        saved.decimalPlaces = decimals[i];
+        SaveSettingsCustom(&saved, path);
+        AppSettings loaded;
+        LoadSettingsCustom(&loaded, path);
+        assert(loaded.minimumSpeedUnit == units[i]);
+        assert(loaded.decimalPlaces == decimals[i]);
+    }
+    printf("PASS: TestSpeedFormattingSettingsRoundTrip\n");
+
+    WritePrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"unknown", path);
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.minimumSpeedUnit == MinimumSpeedUnit::Auto);
+    printf("PASS: TestUnknownSpeedUnitFallback\n");
+
+    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", L"not-a-number", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.decimalPlaces == 2);
+    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", nullptr, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.decimalPlaces == 2);
+    printf("PASS: TestMalformedDecimalPlacesFallback\n");
+
+    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", L"99", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.decimalPlaces == 2);
+    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", L"-99", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.decimalPlaces == 0);
+    printf("PASS: TestDecimalPlacesClamping\n");
+
+    AppSettings canonical;
+    canonical.minimumSpeedUnit = MinimumSpeedUnit::Gigabytes;
+    canonical.decimalPlaces = 1;
+    SaveSettingsCustom(&canonical, path);
+    wchar_t text[32] = {};
+    GetPrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"", text, _countof(text), path);
+    assert(wcscmp(text, L"GB/s") == 0);
+    GetPrivateProfileStringW(L"Overlay", L"DecimalPlaces", L"", text, _countof(text), path);
+    assert(wcscmp(text, L"1") == 0);
+    printf("PASS: TestCanonicalSpeedFormattingSettings\n");
+
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"DownloadColor", L"6613770", path);
+    WritePrivateProfileStringW(L"Overlay", L"UploadColor", L"2005720", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.minimumSpeedUnit == MinimumSpeedUnit::Auto);
+    assert(loaded.decimalPlaces == 2);
+    assert(loaded.down == static_cast<COLORREF>(6613770));
+    assert(loaded.up == static_cast<COLORREF>(2005720));
+    printf("PASS: TestLegacySettingsCompatibility\n");
+
+    DeleteFileW(path);
+}
+
+void TestTaskbarOffsetSettings() {
+    const wchar_t* path = L".\\test_taskbar_offset.ini";
+    DeleteFileW(path);
+
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 0);
+
+    AppSettings saved;
+    saved.taskbarOffset = 321;
+    SaveSettingsCustom(&saved, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 321);
+
+    saved.taskbarOffset = -456;
+    SaveSettingsCustom(&saved, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == -456);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"not-a-number", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 0);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"999999", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == TASKBAR_METER_OFFSET_MAX);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-999999", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == TASKBAR_METER_OFFSET_MIN);
+
+    int parsed = 0;
+    assert(ParseTaskbarMeterOffset(L" -120 ", &parsed) && parsed == -120);
+    assert(!ParseTaskbarMeterOffset(L"12px", &parsed));
+
+    DeleteFileW(path);
+    printf("PASS: TestTaskbarOffsetSettings\n");
 }
 
 // Test 4: Live adapter enumeration with LUID stability
@@ -362,6 +523,11 @@ void TestTaskbarPlacement() {
     assert(bottom96.right - bottom96.left == 132);
     assert(bottom96.bottom - bottom96.top == 40);
 
+    const RECT bottomPositive = CalculateTaskbarOverlayRect(bottomSecondary, ABE_BOTTOM, 96, 100);
+    const RECT bottomNegative = CalculateTaskbarOverlayRect(bottomSecondary, ABE_BOTTOM, 96, -100);
+    assert(bottomPositive.left - bottom96.left == 100);
+    assert(bottomNegative.left - bottom96.left == -100);
+
     const RECT topSecondary = { 1920, 0, 4480, 60 };
     const RECT top120 = CalculateTaskbarOverlayRect(topSecondary, ABE_TOP, 120);
     AssertInside(top120, topSecondary);
@@ -372,7 +538,11 @@ void TestTaskbarPlacement() {
     AssertInside(CalculateTaskbarOverlayRect(left, ABE_LEFT, 144), left);
 
     const RECT right = { 2500, -200, 2560, 1240 };
-    AssertInside(CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192), right);
+    const RECT rightBase = CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192);
+    const RECT rightOffset = CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192, -100);
+    AssertInside(rightBase, right);
+    AssertInside(rightOffset, right);
+    assert(rightOffset.top - rightBase.top == -200);
 
     const RECT wideBottom = { 0, 2080, 3840, 2160 };
     const RECT bottom168 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 168);
@@ -381,6 +551,17 @@ void TestTaskbarPlacement() {
 
     const RECT bottom192 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 192);
     assert(bottom192.right - bottom192.left == 264);
+    const RECT bottom192Offset = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 192, 100);
+    assert(bottom192Offset.left - bottom192.left == 200);
+
+    const RECT farLeft = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 96,
+                                                     TASKBAR_METER_OFFSET_MIN);
+    const RECT farRight = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 96,
+                                                      TASKBAR_METER_OFFSET_MAX);
+    AssertInside(farLeft, wideBottom);
+    AssertInside(farRight, wideBottom);
+    assert(farLeft.left == wideBottom.left + 2);
+    assert(farRight.right == wideBottom.right - 2);
     printf("PASS: TestTaskbarPlacement\n");
 }
 
@@ -413,9 +594,12 @@ void TestOverlayAlphaComposition() {
 
 int main() {
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
-    TestFormatting();
+    TestSpeedFormatting();
+    TestUnchangedIndependentFormatting();
     TestNetSamplerMock();
     TestSettings();
+    TestSpeedFormattingSettings();
+    TestTaskbarOffsetSettings();
     TestLiveAdapters();
     TestGdiResourceLeakCheck();
     TestAdapterRebindAndNoFallback();

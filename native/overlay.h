@@ -14,7 +14,7 @@ inline int ClampOverlay(int value, int low, int high) {
     return value;
 }
 
-inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi) {
+inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi, int logicalOffset = 0) {
     const int barWidth = taskbar.right - taskbar.left;
     const int barHeight = taskbar.bottom - taskbar.top;
     const int padding = ScaleOverlay(2, dpi) > 0 ? ScaleOverlay(2, dpi) : 1;
@@ -28,12 +28,12 @@ inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi
     int x = taskbar.left + (barWidth - width) / 2;
     int y = taskbar.top + (barHeight - height) / 2;
     if (edge == ABE_TOP || edge == ABE_BOTTOM) {
-        // ponytail: reserve the notification area without inspecting Explorer children;
-        // add a persisted offset only if real taskbar layouts need tuning.
-        x = taskbar.right - ScaleOverlay(350, dpi) - width;
+        // ponytail: documented APIs expose no free taskbar slot; the persisted
+        // logical offset is the user-controlled escape hatch for real layouts.
+        x = taskbar.right - ScaleOverlay(350, dpi) - width + ScaleOverlay(logicalOffset, dpi);
         x = ClampOverlay(x, taskbar.left + padding, taskbar.right - padding - width);
     } else {
-        y = taskbar.bottom - ScaleOverlay(50, dpi) - height;
+        y = taskbar.bottom - ScaleOverlay(50, dpi) - height + ScaleOverlay(logicalOffset, dpi);
         y = ClampOverlay(y, taskbar.top + padding, taskbar.bottom - padding - height);
     }
 
