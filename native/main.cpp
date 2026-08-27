@@ -433,7 +433,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
 
-    HWND hwndRef = g_hwndOverlay ? g_hwndOverlay : g_hwndMain;
+    HWND hwndRef = (g_hwndOverlay && IsWindowVisible(g_hwndOverlay)) ? g_hwndOverlay : g_hwndMain;
+    if (!hwndRef) hwndRef = g_hwndOverlay;
     HMONITOR hMon = MonitorFromWindow(hwndRef, MONITOR_DEFAULTTONEAREST);
 
     MONITORINFO mi = { sizeof(mi) };

@@ -5,6 +5,8 @@ const src = readFileSync(resolve('native/main.cpp'), 'utf8');
 
 const requiredTokens = [
     'MonitorFromWindow',
+    'MONITOR_DEFAULTTONEAREST',
+    'IsWindowVisible(g_hwndOverlay)',
     'GetMonitorInfoW',
     'rcWork',
     'rcMon',
