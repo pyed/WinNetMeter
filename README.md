@@ -1,86 +1,122 @@
+# NetworkMonitorLite™
+
 <a href="https://github.com/mcagriaksoy/networkMonitorLite" title="Go to GitHub repo"><img src="https://img.shields.io/static/v1?label=mcagriaksoy&message=networkMonitorLite&color=blue&logo=github" alt="mcagriaksoy - networkMonitorLite"></a>
 <a href="https://github.com/mcagriaksoy/networkMonitorLite/releases/"><img src="https://img.shields.io/github/tag/mcagriaksoy/networkMonitorLite?include_prereleases=&sort=semver&color=blue" alt="GitHub tag"></a>
 <a href="#license"><img src="https://img.shields.io/badge/License-Apache_v2-red" alt="License"></a>
 <a href="https://github.com/mcagriaksoy/networkMonitorLite/issues"><img src="https://img.shields.io/github/issues/mcagriaksoy/networkMonitorLite" alt="issues - networkMonitorLite"></a>
 
+**NetworkMonitorLite™** is a lightweight, zero-dependency native Windows utility that displays live download and upload speeds in a clean desktop window, a dynamic system tray icon, and a draggable taskbar widget.
 
-NetworkMonitorLite™ is a tiny, dependency-free native Windows application that shows live upload/download speeds in a clean interface, system tray icon, and draggable taskbar widget. Lightweight, portable, and fully compatible with Windows 10 and Windows 11.
+Built in modern C++20 for Windows 10 and 11 (x64), it operates entirely via native Win32 and IP Helper APIs with zero runtime dependencies.
 
-- **Zero dependencies** – Native C++20 Win32 binary, statically linked CRT (`/MT`), no .NET or VC runtime DLL requirements
-- **Tiny footprint** – Single ~400KB executable, ultra-fast and resource-friendly
-- **Per-Monitor V2 DPI** – Crisp scaling on multi-monitor setups with different scaling factors
-- **No malware, no bloat** – Zero telemetry, zero updaters, zero background socket connections
-- **Instant visibility** – Real-time speeds using monotonic 64-bit IP Helper API counters
-- **No installation required** – 100% portable
+---
+
+## Key Highlights
+
+- **Zero Dependencies**: Pure native C++20 Win32 application compiled with static C Runtime (`/MT`). No .NET runtime, VC++ redistributables, or third-party DLLs required.
+- **Tiny & Fast**: Single standalone executable (~400 KB) with minimal CPU and memory footprints.
+- **Precise Throughput Measurement**: Uses Windows IP Helper APIs (`GetIfTable2` / `GetIfEntry2`) and high-resolution monotonic clock (`QueryPerformanceCounter`) to sample 64-bit network octet counters.
+- **Stable Adapter Identity**: Tracks network interfaces by stable 64-bit `NET_LUID`, surviving adapter re-indexing, VPN reconnects, and disconnect/reconnect cycles without data spikes.
+- **Per-Monitor V2 DPI**: Crisp rendering and dynamic rescaling across multiple monitors with varying DPI scaling factors.
+- **Privacy & Security**: Zero telemetry, zero analytics, zero background network connections, and no administrative elevation required.
+- **Portable**: Fully self-contained; settings persist in `%APPDATA%\NetworkMonitorLite\settings.ini`.
+
+---
 
 ## Features
-- Live download and upload speed monitoring per active network interface (Ethernet, Wi-Fi, VPNs)
-- Minimal taskbar widget you can drag and place near the system tray (monitor-aware)
-- Tray icon with dynamic live speeds (zero GDI leaks)
-- Native Settings dialog to customize:
-  - Widget background color
-  - Download and upload text colors
-  - Font family, size, and style
-- Settings persist across sessions in `%APPDATA%\NetworkMonitorLite\settings.ini`
+
+- **Live Speed Monitoring**: Real-time upload and download speeds and session totals for physical (Ethernet, Wi-Fi) and VPN/virtual network adapters.
+- **Draggable Taskbar Widget**: Compact overlay docked adjacent to the taskbar (bottom, top, left, or right) with custom opacity and colors.
+- **Dynamic System Tray Icon**: Generates real-time speed icons in the notification area with leak-free GDI handle lifecycle management.
+- **Customizable Appearance**: Settings dialog to customize widget background color, download/upload text colors, font family, font size, and full font styles (Bold, Italic, Underline, Strikeout).
+
+---
 
 ## Screenshots
 
-Main UI:
-
+### Main Window & System Tray
 ![Main Window](img/ui.png)
 
-How to Open the taskbar widget:
+### Taskbar Widget Placement
+![How to use the taskbar widget](img/how_to_display.gif)
 
-![how to use the taskbar widget?](img/how_to_display.gif)
-
-Settings UI:
-
+### Settings Dialog
 ![Settings Dialog](img/settings.png)
 
-## Requirements
-- Windows 10 or Windows 11 (x64)
+---
 
-## Build and Run
+## System Requirements
 
-### Native x64 Build (Recommended)
-From Visual Studio Developer Command Prompt or x64 Native Tools:
+- **Operating System**: Windows 10 or Windows 11 (x64)
+- **Privileges**: Standard user (no administrator privileges needed)
+
+---
+
+## Building from Source
+
+### Prerequisites
+- **Visual Studio 2022** or **Build Tools for Visual Studio 2022** (with *Desktop development with C++* workload)
+- **Windows 10/11 SDK**
+
+### Build Instructions
+Open a **Developer Command Prompt for VS 2022** (or `x64 Native Tools Command Prompt`) and run:
 
 ```cmd
 cd native
 build.bat
 ```
 
-The output executable is generated at `native\out\NetworkMonitorLite.exe`.
+The build compiles with strict flags (`/W4 /WX /permissive- /std:c++20 /O2 /MT`) and outputs the standalone executable to:
 
-### Running Unit Tests
+```text
+native\out\NetworkMonitorLite.exe
+```
+
+> **Note**: Statically linking the CRT via `/MT` embeds the necessary C/C++ runtime routines directly into the binary, allowing `NetworkMonitorLite.exe` to run on any clean Windows installation without installing Visual C++ Redistributable packages.
+
+---
+
+## Running the Test Suite
+
+The repository includes a comprehensive, dependency-free native regression and unit test harness:
+
 ```cmd
 cd native\tests
 run_tests.bat
 ```
 
-### C# / .NET Legacy Build
-```powershell
-cd networkMonitorLite
-dotnet build
-dotnet run
+### Verified Test Cases
+- **Speed & Byte Formatting**: Exact string representation for bps, KB/s, MB/s, GB/s, and compact tray strings.
+- **Monotonic Timing**: Monotonic throughput calculation using actual high-resolution clock deltas.
+- **64-bit Counter Accumulation & Wrap**: Correct delta calculations with 64-bit counters exceeding 4 GB.
+- **Adapter Rebind & Fallback**: Proof that interface reconnection with a new LUID establishes a zero-speed baseline without spikes, preserves totals, and never falls back to an unrelated adapter.
+- **Settings INI Roundtrip**: Reading, parsing, and persisting colors, fonts, and styles to INI.
+- **Zero GDI Resource Leaks**: Stress-tested across 200 icon and font lifecycles verified via `GetGuiResources` (`GR_GDIOBJECTS` and `GR_USEROBJECTS`).
+
+---
+
+## Configuration & Settings
+
+Settings are stored in standard INI format at:
+
+```text
+%APPDATA%\NetworkMonitorLite\settings.ini
 ```
 
-## Usage
-1. Pick a network interface from the dropdown in the main window.
-2. Watch live speeds (Download/Upload) and total transfer amounts.
-3. Use the system tray icon menu:
-   - **Show Window**: Bring main window to front
-   - **Settings…**: Open native customization dialog
-   - **Show Taskbar Widget**: Toggle the draggable overlay
-   - **Exit**: Clean shutdown
+Example configuration:
+```ini
+[Overlay]
+FontFamily=Segoe UI
+FontSize=8.0
+FontStyle=1
+ShowWidget=1
+Background=1315860
+DownloadColor=5463040
+UploadColor=47615
+```
 
-### Settings
-- Right-click the tray icon and choose "Settings…" to customize:
-  - Taskbar widget background color
-  - Download and upload text colors
-  - Font family, size, and style
-- Settings are saved to:
-  - `%APPDATA%\NetworkMonitorLite\settings.ini`
+---
 
-## Support
-- Author: mcagriaksoy — https://github.com/mcagriaksoy/NetworkMonitorLite
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
