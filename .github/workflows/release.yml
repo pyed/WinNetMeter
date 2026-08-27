@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build WinNetMeter (Release x64)
+        shell: cmd
+        working-directory: native
+        run: build.bat
+
+      - name: Run Native Test Suite
+        shell: cmd
+        working-directory: native/tests
+        run: run_tests.bat
+
+      - name: Stage Release Package and Compute Checksums
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v0.1.0' }
+          $pkgName = "WinNetMeter-$tag-windows-x64"
+          $stagingDir = "dist/$pkgName"
+
+          New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+          Copy-Item "native/out/WinNetMeter.exe" -Destination "$stagingDir/" -Force
+          Copy-Item "README.md" -Destination "$stagingDir/" -Force
+          Copy-Item "LICENSE" -Destination "$stagingDir/" -Force
+
+          # Create distribution ZIP
+          $zipPath = "dist/$pkgName.zip"
+          Compress-Archive -Path "$stagingDir/*" -DestinationPath $zipPath -Force
+
+          # Compute SHA-256 checksums
+          $zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          "$zipHash *$pkgName.zip`r`n" | Out-File -FilePath "dist/$pkgName.zip.sha256" -Encoding ascii -NoNewline
+
+          $exeHash = (Get-FileHash -Path "native/out/WinNetMeter.exe" -Algorithm SHA256).Hash.ToLower()
+          "$exeHash *WinNetMeter.exe`r`n" | Out-File -FilePath "dist/WinNetMeter.exe.sha256" -Encoding ascii -NoNewline
+
+          Write-Host "Generated release artifacts in dist/:"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload Release Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $pkgName = "WinNetMeter-$tag-windows-x64"
+
+          gh release create $tag `
+            "dist/$pkgName.zip" `
+            "dist/$pkgName.zip.sha256" `
+            "native/out/WinNetMeter.exe" `
+            "dist/WinNetMeter.exe.sha256" `
+            --title "WinNetMeter $tag" `
+            --generate-notes
