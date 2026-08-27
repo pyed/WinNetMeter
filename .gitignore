@@ -1,5 +1,6 @@
 # Build output and binaries
 native/out/
+dist/
 *.exe
 *.obj
 *.res

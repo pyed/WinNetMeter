@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test (x64 Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build NetworkMonitorLite (Release x64)
+        shell: cmd
+        working-directory: native
+        run: build.bat
+
+      - name: Run Native Test Suite
+        shell: cmd
+        working-directory: native/tests
+        run: run_tests.bat
+
+      - name: Verify Executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path native/out/NetworkMonitorLite.exe)) {
+            Write-Error "Build artifact native/out/NetworkMonitorLite.exe was not produced."
+            exit 1
+          }
+          $item = Get-Item native/out/NetworkMonitorLite.exe
+          Write-Host "Built successfully: $($item.FullName) ($($item.Length) bytes)"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitorLite-windows-x64
+          path: native/out/NetworkMonitorLite.exe
+          if-no-files-found: error

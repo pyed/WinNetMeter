@@ -52,6 +52,15 @@ Built in modern C++20 for Windows 10 and 11 (x64), it operates entirely via nati
 
 ---
 
+## Downloads & Releases
+
+- **Pre-built Releases**: Download official packaged archives from [GitHub Releases](https://github.com/mcagriaksoy/networkMonitorLite/releases) (starting with initial release **v0.1.0**).
+- **Self-Contained**: The release package (`NetworkMonitorLite-v<version>-windows-x64.zip`) is fully standalone for x64 Windows with no .NET runtime or Visual C++ Redistributable requirements.
+- **CI Artifacts**: Automated continuous integration builds are produced by GitHub Actions on every commit to `main`.
+- **Code Signing**: Binaries are currently unsigned; standard Windows SmartScreen prompts may appear on first run.
+
+---
+
 ## Building from Source
 
 ### Prerequisites
