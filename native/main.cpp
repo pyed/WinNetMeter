@@ -93,6 +93,7 @@ static UINT g_uTaskbarCreatedMsg = 0;
 static NetSampler g_sampler;
 static AppSettings g_settings;
 static NET_LUID g_selectedLuid = {};
+static wchar_t g_selectedAlias[128] = L"";
 static NET_LUID g_comboLuids[64] = {};
 static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
@@ -116,7 +117,7 @@ static void UpdateTrayIcon();
 static void SetupTrayIcon();
 static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
-static void PopulateAdapters();
+static void PopulateAdapters(bool isInitialStartup = false);
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
 
 static int ScaleDpi(int val, int dpi) {
@@ -432,8 +433,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
 
-    HWND hwndTaskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
-    HMONITOR hMon = MonitorFromWindow(hwndTaskbar ? hwndTaskbar : g_hwndMain, MONITOR_DEFAULTTOPRIMARY);
+    HWND hwndRef = g_hwndOverlay ? g_hwndOverlay : g_hwndMain;
+    HMONITOR hMon = MonitorFromWindow(hwndRef, MONITOR_DEFAULTTONEAREST);
 
     MONITORINFO mi = { sizeof(mi) };
     if (!GetMonitorInfoW(hMon, &mi)) {
@@ -517,14 +518,28 @@ static void CreateOrUpdateOverlay() {
     }
 }
 
-static int g_tickCounter = 0;
+static ULONGLONG g_lastFailTick = 0;
 static void OnTimerTick() {
-    ++g_tickCounter;
-    if (g_selectedLuid.Value == 0 || (g_tickCounter % 5 == 0)) {
-        PopulateAdapters();
+    if (g_selectedLuid.Value == 0) {
+        // Disconnected / waiting for reconnect: rate-limited refresh at most every 3s
+        ULONGLONG now = GetTickCount64();
+        if (now - g_lastFailTick >= 3000) {
+            g_lastFailTick = now;
+            PopulateAdapters(false);
+        }
     }
 
     if (g_selectedLuid.Value == 0) {
+        wcscpy_s(g_szDownSpeed, L"0.00 KB/s");
+        wcscpy_s(g_szUpSpeed, L"0.00 KB/s");
+        wcscpy_s(g_szDownCompact, L"0B");
+        wcscpy_s(g_szUpCompact, L"0B");
+        if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, L"0.00 KB/s");
+        if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, L"0.00 KB/s");
+        UpdateTrayIcon();
+        if (g_hwndOverlay && g_settings.showWidget) {
+            InvalidateRect(g_hwndOverlay, nullptr, FALSE);
+        }
         return;
     }
 
@@ -545,6 +560,13 @@ static void OnTimerTick() {
         FormatBytes(g_sampler.totalOut, totalBuf, _countof(totalBuf));
         if (g_hwndTotalUp) SetWindowTextW(g_hwndTotalUp, totalBuf);
     } else {
+        // Sampling failed (adapter disconnected/disabled): rate-limited refresh at most every 3s
+        ULONGLONG now = GetTickCount64();
+        if (now - g_lastFailTick >= 3000) {
+            g_lastFailTick = now;
+            PopulateAdapters(false);
+        }
+
         wcscpy_s(g_szDownSpeed, L"0.00 KB/s");
         wcscpy_s(g_szUpSpeed, L"0.00 KB/s");
         wcscpy_s(g_szDownCompact, L"0B");
@@ -564,6 +586,7 @@ static void OnComboSelectionChanged() {
     int sel = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
     if (sel >= 0 && sel < g_comboLuidCount) {
         NET_LUID luid = g_comboLuids[sel];
+        SendMessageW(g_combo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(g_selectedAlias));
         if (luid.Value != g_selectedLuid.Value) {
             g_selectedLuid = luid;
             g_sampler.Reset(luid);
@@ -575,43 +598,62 @@ static void OnComboSelectionChanged() {
     }
 }
 
-static void PopulateAdapters() {
-    wchar_t selectedName[128] = L"";
-    int curSel = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
-    if (curSel >= 0) {
-        SendMessageW(g_combo, CB_GETLBTEXT, curSel, reinterpret_cast<LPARAM>(selectedName));
-    }
-
+static void PopulateAdapters(bool isInitialStartup) {
     SendMessageW(g_combo, CB_RESETCONTENT, 0, 0);
 
     AdapterInfo list[64];
     int count = GetAdapters(list, 64);
     g_comboLuidCount = 0;
 
-    int selectedIdx = -1;
-    int nameMatchIdx = -1;
+    int exactLuidIdx = -1;
+    int aliasMatchIdx = -1;
+    int aliasMatchCount = 0;
+    int initialUpIdx = -1;
 
     for (int i = 0; i < count; ++i) {
         int item = static_cast<int>(SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(list[i].name)));
         if (item >= 0 && item < 64) {
             g_comboLuids[item] = list[i].luid;
             g_comboLuidCount = max(g_comboLuidCount, item + 1);
-            if (list[i].luid.Value == g_selectedLuid.Value && g_selectedLuid.Value != 0) {
-                selectedIdx = item;
-            } else if (selectedName[0] != L'\0' && wcscmp(list[i].name, selectedName) == 0 && nameMatchIdx < 0) {
-                nameMatchIdx = item;
+
+            if (isInitialStartup) {
+                if (list[i].status == IfOperStatusUp && initialUpIdx < 0) {
+                    initialUpIdx = item;
+                }
+            } else {
+                if (list[i].luid.Value == g_selectedLuid.Value && g_selectedLuid.Value != 0) {
+                    exactLuidIdx = item;
+                }
+                if (g_selectedAlias[0] != L'\0' && wcscmp(list[i].name, g_selectedAlias) == 0) {
+                    aliasMatchIdx = item;
+                    ++aliasMatchCount;
+                }
             }
         }
     }
 
-    if (selectedIdx >= 0) {
-        SendMessageW(g_combo, CB_SETCURSEL, selectedIdx, 0);
-    } else if (nameMatchIdx >= 0) {
-        SendMessageW(g_combo, CB_SETCURSEL, nameMatchIdx, 0);
-        g_selectedLuid = g_comboLuids[nameMatchIdx];
-    } else if (count > 0) {
-        SendMessageW(g_combo, CB_SETCURSEL, 0, 0);
-        g_selectedLuid = g_comboLuids[0];
+    if (isInitialStartup) {
+        int chosen = (initialUpIdx >= 0) ? initialUpIdx : ((count > 0) ? 0 : -1);
+        if (chosen >= 0) {
+            SendMessageW(g_combo, CB_SETCURSEL, chosen, 0);
+            g_selectedLuid = g_comboLuids[chosen];
+            SendMessageW(g_combo, CB_GETLBTEXT, chosen, reinterpret_cast<LPARAM>(g_selectedAlias));
+            g_sampler.Reset(g_selectedLuid);
+        }
+    } else {
+        if (exactLuidIdx >= 0) {
+            SendMessageW(g_combo, CB_SETCURSEL, exactLuidIdx, 0);
+        } else if (aliasMatchCount == 1 && aliasMatchIdx >= 0) {
+            // Unambiguous reconnect on new LUID: rebind & rebaseline sampler without losing totals
+            SendMessageW(g_combo, CB_SETCURSEL, aliasMatchIdx, 0);
+            g_selectedLuid = g_comboLuids[aliasMatchIdx];
+            g_sampler.Rebind(g_selectedLuid);
+        } else {
+            // Disappeared or ambiguous match: do NOT fall back to an unrelated adapter!
+            // Keep g_selectedAlias intact for future recovery, set LUID to 0 (disconnected).
+            SendMessageW(g_combo, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+            g_selectedLuid.Value = 0;
+        }
     }
 }
 
@@ -957,7 +999,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                   0, 0, 0, 0,
                                   hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_COMBO_IF)), g_hInst, nullptr);
 
-        PopulateAdapters();
+        PopulateAdapters(true);
 
         g_hwndDownTitle = mkLabel(L"Download Speed:", ID_DOWN_TITLE, SS_LEFT);
         g_hwndSpeedDown = mkLabel(L"0.00 KB/s", ID_SPEED_DOWN, SS_RIGHT);

@@ -46,6 +46,15 @@ struct NetSampler {
         totalOut = 0;
     }
 
+    void Rebind(NET_LUID luid) {
+        // Rebaseline for new LUID while preserving accumulated totals across reconnect
+        valid = false;
+        trackedLuid = luid;
+        lastIn = 0;
+        lastOut = 0;
+        lastQpc.QuadPart = 0;
+    }
+
     void Clear() {
         valid = false;
         trackedLuid.Value = 0;

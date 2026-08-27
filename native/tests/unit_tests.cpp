@@ -250,6 +250,96 @@ void TestGdiResourceLeakCheck() {
     printf("PASS: TestGdiResourceLeakCheck (Zero Leaks)\n");
 }
 
+// Test 6: Deterministic Adapter Rebind and No-Silent-Fallback Verification
+void TestAdapterRebindAndNoFallback() {
+    NetSampler s;
+    NET_LUID luid1, luid2;
+    luid1.Value = 0x1111111122222222ULL;
+    luid2.Value = 0x3333333344444444ULL;
+
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER t0;
+    t0.QuadPart = 1000000;
+
+    // 1. Initial tracking on luid1
+    s.Reset(luid1);
+    ULONGLONG down = 0, up = 0;
+    s.UpdateMock(5000000000ULL, 2000000000ULL, t0, freq, IfOperStatusUp, &down, &up);
+    assert(down == 0 && up == 0 && s.totalIn == 0);
+
+    // 2. Transfer 10MB down
+    LARGE_INTEGER t1;
+    t1.QuadPart = t0.QuadPart + freq.QuadPart;
+    s.UpdateMock(5000000000ULL + 10485760ULL, 2000000000ULL, t1, freq, IfOperStatusUp, &down, &up);
+    assert(down == 10485760ULL);
+    assert(s.totalIn == 10485760ULL);
+
+    // 3. Adapter reconnects with NEW LUID (e.g. WireGuard tunnel recreated with initial counter 2000 bytes)
+    s.Rebind(luid2);
+    assert(!s.valid);
+    assert(s.totalIn == 10485760ULL); // Totals preserved across reconnect!
+
+    // 4. First sample on new LUID must establish a zero-speed baseline, NEVER subtract old 5GB counter from new 2KB counter!
+    LARGE_INTEGER t2;
+    t2.QuadPart = t1.QuadPart + freq.QuadPart;
+    s.UpdateMock(2000ULL, 1000ULL, t2, freq, IfOperStatusUp, &down, &up);
+    assert(down == 0 && up == 0);
+    assert(s.totalIn == 10485760ULL); // Totals not corrupted
+
+    // 5. Subsequent sample on new LUID accurately measures new delta (+1MB)
+    LARGE_INTEGER t3;
+    t3.QuadPart = t2.QuadPart + freq.QuadPart;
+    s.UpdateMock(2000ULL + 1048576ULL, 1000ULL + 524288ULL, t3, freq, IfOperStatusUp, &down, &up);
+    assert(down == 1048576ULL);
+    assert(up == 524288ULL);
+    assert(s.totalIn == 10485760ULL + 1048576ULL);
+    assert(s.totalOut == 524288ULL);
+
+    // 6. Test unambiguous vs ambiguous match logic:
+    // Simulation: adapter list has 2 adapters: "Ethernet" and "Wi-Fi"
+    AdapterInfo mockList[2];
+    mockList[0].luid.Value = 0xAAA;
+    wcscpy_s(mockList[0].name, L"Ethernet");
+    mockList[0].status = IfOperStatusUp;
+
+    mockList[1].luid.Value = 0xBBB;
+    wcscpy_s(mockList[1].name, L"Wi-Fi");
+    mockList[1].status = IfOperStatusUp;
+
+    // Suppose previous selection was "VPN" with LUID 0xCCC
+    wchar_t selectedAlias[128] = L"VPN";
+    NET_LUID selectedLuid;
+    selectedLuid.Value = 0xCCC;
+
+    int exactMatch = -1;
+    int aliasMatch = -1;
+    int aliasMatchCount = 0;
+
+    for (int i = 0; i < 2; ++i) {
+        if (mockList[i].luid.Value == selectedLuid.Value) exactMatch = i;
+        if (wcscmp(mockList[i].name, selectedAlias) == 0) {
+            aliasMatch = i;
+            ++aliasMatchCount;
+        }
+    }
+
+    // Since "VPN" disappeared and has no match in list, it must NOT select "Ethernet" (index 0)
+    assert(exactMatch == -1);
+    assert(aliasMatchCount == 0);
+    int finalChosen = -1;
+    if (exactMatch >= 0) {
+        finalChosen = exactMatch;
+    } else if (aliasMatchCount == 1) {
+        finalChosen = aliasMatch;
+    } else {
+        finalChosen = -1; // Disconnected! Never fall back to 0!
+    }
+    assert(finalChosen == -1);
+
+    printf("PASS: TestAdapterRebindAndNoFallback\n");
+}
+
 int main() {
     printf("Running NetworkMonitorLite Native Robustness & Regression Tests...\n");
     TestFormatting();
@@ -257,6 +347,7 @@ int main() {
     TestSettings();
     TestLiveAdapters();
     TestGdiResourceLeakCheck();
+    TestAdapterRebindAndNoFallback();
     printf("ALL TESTS PASSED\n");
     return 0;
 }

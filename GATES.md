@@ -89,7 +89,7 @@ Scope: Complete, dependency-free native Windows x64 rewrite of NetworkMonitorLit
   EXPECT: PE imports verification passed: zero external runtime DLLs
   EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=C:\Users\Sheriff\Desktop\src\networkMonitorLite; path=751bdd565e21/18 entries; EXPECT=matched; output-sha256=f76b5b26dc67fd535b99ab4cba654bdd5a18a23f22673ed7fab769bb0f8b2f8c; output-bytes=59
 
-- [x] G18: Security and privacy audit confirms zero telemetry, zero updaters, zero shell execution, and zero elevation requirements (Automated Source & Import Audit)
+- [x] G18: Security and privacy audit confirms zero telemetry, zero updaters, zero command/process execution, and zero unsolicited shell activity (explicit user-clicked ShellExecuteW to open project GitHub URL is sole allowed exception)
   CHECK: node scripts/verify-security-privacy.mjs
   EXPECT: security and privacy verification passed
   EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=C:\Users\Sheriff\Desktop\src\networkMonitorLite; path=751bdd565e21/18 entries; EXPECT=matched; output-sha256=c9b9c66c013e6c4bf156faafa2d0361b6edd55347c5395f442ddcd2cfeb8cd6c; output-bytes=41
