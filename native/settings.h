@@ -3,7 +3,6 @@
 #include <windows.h>
 
 struct AppSettings {
-    COLORREF bg = RGB(20, 20, 20);     // Overlay background color
     COLORREF down = RGB(0, 255, 100);  // Download speed color
     COLORREF up = RGB(255, 180, 0);    // Upload speed color
     wchar_t fontFamily[64] = L"Segoe UI";

@@ -9,6 +9,7 @@
 #include <string.h>
 #include <math.h>
 #include "../network.h"
+#include "../overlay.h"
 #include "../settings.h"
 
 // Test 1: Formatting exact parity with C#
@@ -128,7 +129,6 @@ void TestNetSamplerMock() {
 // Test 3: Settings INI roundtrip
 void TestSettings() {
     AppSettings s1;
-    s1.bg = RGB(40, 50, 60);
     s1.down = RGB(10, 200, 100);
     s1.up = RGB(220, 150, 30);
     wcscpy_s(s1.fontFamily, L"Arial");
@@ -142,7 +142,6 @@ void TestSettings() {
     AppSettings s2;
     LoadSettingsCustom(&s2, L".\\test_settings.ini");
 
-    assert(s2.bg == s1.bg);
     assert(s2.down == s1.down);
     assert(s2.up == s1.up);
     assert(wcscmp(s2.fontFamily, s1.fontFamily) == 0);
@@ -346,6 +345,72 @@ void TestAdapterRebindAndNoFallback() {
     printf("PASS: TestAdapterRebindAndNoFallback\n");
 }
 
+static void AssertInside(const RECT& inner, const RECT& outer) {
+    assert(inner.left >= outer.left);
+    assert(inner.top >= outer.top);
+    assert(inner.right <= outer.right);
+    assert(inner.bottom <= outer.bottom);
+    assert(inner.right > inner.left);
+    assert(inner.bottom > inner.top);
+}
+
+// Test 7: Taskbar-relative placement across edges, negative coordinates, and DPI
+void TestTaskbarPlacement() {
+    const RECT bottomSecondary = { -1920, 1032, 0, 1080 };
+    const RECT bottom96 = CalculateTaskbarOverlayRect(bottomSecondary, ABE_BOTTOM, 96);
+    AssertInside(bottom96, bottomSecondary);
+    assert(bottom96.right - bottom96.left == 132);
+    assert(bottom96.bottom - bottom96.top == 40);
+
+    const RECT topSecondary = { 1920, 0, 4480, 60 };
+    const RECT top120 = CalculateTaskbarOverlayRect(topSecondary, ABE_TOP, 120);
+    AssertInside(top120, topSecondary);
+    assert(top120.right - top120.left == 165);
+    assert(top120.bottom - top120.top == 50);
+
+    const RECT left = { -1600, -900, -1540, 0 };
+    AssertInside(CalculateTaskbarOverlayRect(left, ABE_LEFT, 144), left);
+
+    const RECT right = { 2500, -200, 2560, 1240 };
+    AssertInside(CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192), right);
+
+    const RECT wideBottom = { 0, 2080, 3840, 2160 };
+    const RECT bottom168 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 168);
+    assert(bottom168.right - bottom168.left == 231);
+    assert(bottom168.bottom - bottom168.top == 70);
+
+    const RECT bottom192 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 192);
+    assert(bottom192.right - bottom192.left == 264);
+    printf("PASS: TestTaskbarPlacement\n");
+}
+
+// Test 8: GDI grayscale coverage becomes valid premultiplied BGRA
+void TestOverlayAlphaComposition() {
+    BYTE pixels[24] = {
+        0, 0, 0, 0,       128, 128, 128, 0, 255, 255, 255, 0,
+        0, 0, 0, 0,        64,  64,  64, 0, 255, 255, 255, 0,
+    };
+    const COLORREF top = RGB(10, 200, 100);
+    const COLORREF bottom = RGB(220, 150, 30);
+    ApplyOverlayAlpha(pixels, 3, 2, 12, 1, top, bottom);
+    auto premultiply = [](BYTE channel, BYTE alpha) {
+        return static_cast<BYTE>((static_cast<unsigned>(channel) * alpha) / 255U);
+    };
+
+    assert(pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 0 && pixels[3] == 0);
+    assert(pixels[4] == premultiply(100, 128));
+    assert(pixels[5] == premultiply(200, 128));
+    assert(pixels[6] == premultiply(10, 128));
+    assert(pixels[7] == 128);
+    assert(pixels[11] == 255);
+    assert(pixels[16] == premultiply(30, 64));
+    assert(pixels[17] == premultiply(150, 64));
+    assert(pixels[18] == premultiply(220, 64));
+    assert(pixels[19] == 64);
+    assert(pixels[23] == 255);
+    printf("PASS: TestOverlayAlphaComposition\n");
+}
+
 int main() {
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestFormatting();
@@ -354,6 +419,8 @@ int main() {
     TestLiveAdapters();
     TestGdiResourceLeakCheck();
     TestAdapterRebindAndNoFallback();
+    TestTaskbarPlacement();
+    TestOverlayAlphaComposition();
     printf("ALL TESTS PASSED\n");
     return 0;
 }

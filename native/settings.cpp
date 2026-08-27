@@ -26,7 +26,6 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     s->fontStyle = GetPrivateProfileIntW(L"Overlay", L"FontStyle", 1, filePath);
     s->showWidget = (GetPrivateProfileIntW(L"Overlay", L"ShowWidget", 1, filePath) != 0) ? 1 : 0;
     
-    s->bg = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"Background", static_cast<DWORD>(s->bg), filePath));
     s->down = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"DownloadColor", static_cast<DWORD>(s->down), filePath));
     s->up = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"UploadColor", static_cast<DWORD>(s->up), filePath));
 }
@@ -46,8 +45,6 @@ void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
     WritePrivateProfileStringW(L"Overlay", L"FontStyle", num, filePath);
     WritePrivateProfileStringW(L"Overlay", L"ShowWidget", s->showWidget ? L"1" : L"0", filePath);
 
-    swprintf_s(num, L"%lu", static_cast<DWORD>(s->bg));
-    WritePrivateProfileStringW(L"Overlay", L"Background", num, filePath);
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
     WritePrivateProfileStringW(L"Overlay", L"DownloadColor", num, filePath);
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->up));
