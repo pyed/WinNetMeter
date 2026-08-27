@@ -127,8 +127,13 @@ static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi) {
     int height = -MulDiv(static_cast<int>(pt * 96.0 / 72.0 + 0.5), dpi, 96);
     bool bold = (style & 1) != 0;
     bool italic = (style & 2) != 0;
-    return CreateFontW(height, 0, 0, 0, bold ? FW_BOLD : FW_REGULAR,
-                       italic ? TRUE : FALSE, FALSE, FALSE,
+    bool underline = (style & 4) != 0;
+    bool strikeout = (style & 8) != 0;
+    return CreateFontW(height, 0, 0, 0,
+                       bold ? FW_BOLD : FW_REGULAR,
+                       italic ? TRUE : FALSE,
+                       underline ? TRUE : FALSE,
+                       strikeout ? TRUE : FALSE,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                        DEFAULT_PITCH | FF_DONTCARE, family);
 }
@@ -455,12 +460,12 @@ static void PositionTaskbarOverlay() {
         x = rcMon.right - w - ScaleDpi(350, dpi);
         y = rcMon.top + ScaleDpi(3, dpi);
     } else if (rcWork.right < rcMon.right) {
-        // Taskbar on right
-        x = rcWork.right + ScaleDpi(5, dpi);
+        // Taskbar on right: immediately left of taskbar inside work area
+        x = rcWork.right - w - ScaleDpi(5, dpi);
         y = rcMon.bottom - h - ScaleDpi(50, dpi);
     } else if (rcWork.left > rcMon.left) {
-        // Taskbar on left
-        x = rcMon.left + ScaleDpi(5, dpi);
+        // Taskbar on left: immediately right of taskbar inside work area
+        x = rcWork.left + ScaleDpi(5, dpi);
         y = rcMon.bottom - h - ScaleDpi(50, dpi);
     } else {
         // Fallback default
@@ -512,8 +517,13 @@ static void CreateOrUpdateOverlay() {
     }
 }
 
-// ---- Sampling & UI Update ---------------------------------------------------
+static int g_tickCounter = 0;
 static void OnTimerTick() {
+    ++g_tickCounter;
+    if (g_selectedLuid.Value == 0 || (g_tickCounter % 5 == 0)) {
+        PopulateAdapters();
+    }
+
     if (g_selectedLuid.Value == 0) {
         return;
     }
@@ -566,6 +576,12 @@ static void OnComboSelectionChanged() {
 }
 
 static void PopulateAdapters() {
+    wchar_t selectedName[128] = L"";
+    int curSel = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
+    if (curSel >= 0) {
+        SendMessageW(g_combo, CB_GETLBTEXT, curSel, reinterpret_cast<LPARAM>(selectedName));
+    }
+
     SendMessageW(g_combo, CB_RESETCONTENT, 0, 0);
 
     AdapterInfo list[64];
@@ -573,20 +589,29 @@ static void PopulateAdapters() {
     g_comboLuidCount = 0;
 
     int selectedIdx = -1;
+    int nameMatchIdx = -1;
+
     for (int i = 0; i < count; ++i) {
         int item = static_cast<int>(SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(list[i].name)));
         if (item >= 0 && item < 64) {
             g_comboLuids[item] = list[i].luid;
             g_comboLuidCount = max(g_comboLuidCount, item + 1);
-            if (list[i].luid.Value == g_selectedLuid.Value || (g_selectedLuid.Value == 0 && i == 0)) {
+            if (list[i].luid.Value == g_selectedLuid.Value && g_selectedLuid.Value != 0) {
                 selectedIdx = item;
-                g_selectedLuid = list[i].luid;
+            } else if (selectedName[0] != L'\0' && wcscmp(list[i].name, selectedName) == 0 && nameMatchIdx < 0) {
+                nameMatchIdx = item;
             }
         }
     }
 
     if (selectedIdx >= 0) {
         SendMessageW(g_combo, CB_SETCURSEL, selectedIdx, 0);
+    } else if (nameMatchIdx >= 0) {
+        SendMessageW(g_combo, CB_SETCURSEL, nameMatchIdx, 0);
+        g_selectedLuid = g_comboLuids[nameMatchIdx];
+    } else if (count > 0) {
+        SendMessageW(g_combo, CB_SETCURSEL, 0, 0);
+        g_selectedLuid = g_comboLuids[0];
     }
 }
 
@@ -630,19 +655,23 @@ static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
     lf.lfHeight = -MulDiv(static_cast<int>(s->fontSize * 96.0 / 72.0 + 0.5), dpi, 96);
     lf.lfWeight = (s->fontStyle & 1) ? FW_BOLD : FW_REGULAR;
     lf.lfItalic = (s->fontStyle & 2) ? TRUE : FALSE;
+    lf.lfUnderline = (s->fontStyle & 4) ? TRUE : FALSE;
+    lf.lfStrikeOut = (s->fontStyle & 8) ? TRUE : FALSE;
     wcsncpy_s(lf.lfFaceName, _countof(lf.lfFaceName), s->fontFamily, _TRUNCATE);
 
     CHOOSEFONTW cf = {};
     cf.lStructSize = sizeof(cf);
     cf.hwndOwner = hwndOwner;
     cf.lpLogFont = &lf;
-    cf.Flags = CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS;
+    cf.Flags = CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS | CF_EFFECTS;
     if (ChooseFontW(&cf)) {
         wcsncpy_s(s->fontFamily, _countof(s->fontFamily), lf.lfFaceName, _TRUNCATE);
         s->fontSize = cf.iPointSize / 10.0;
         int style = 0;
         if (lf.lfWeight >= FW_BOLD) style |= 1;
         if (lf.lfItalic) style |= 2;
+        if (lf.lfUnderline) style |= 4;
+        if (lf.lfStrikeOut) style |= 8;
         s->fontStyle = style;
     }
 }
@@ -967,8 +996,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         int code = HIWORD(wp);
         int id = LOWORD(wp);
-        if (code == CBN_SELCHANGE && id == ID_COMBO_IF) {
-            OnComboSelectionChanged();
+        if (id == ID_COMBO_IF) {
+            if (code == CBN_SELCHANGE) {
+                OnComboSelectionChanged();
+            } else if (code == CBN_DROPDOWN) {
+                PopulateAdapters();
+            }
         } else if (id == ID_AUTHOR_LINK) {
             ShellExecuteW(nullptr, L"open", L"https://github.com/mcagriaksoy/NetworkMonitorLite", nullptr, nullptr, SW_SHOWNORMAL);
         }
@@ -1052,7 +1085,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CLOSE:
-        ShowWindow(hwnd, SW_HIDE);
+        ShowWindow(hwnd, SW_MINIMIZE);
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);

@@ -133,7 +133,7 @@ void TestSettings() {
     s1.up = RGB(220, 150, 30);
     wcscpy_s(s1.fontFamily, L"Arial");
     s1.fontSize = 11.5;
-    s1.fontStyle = 3; // Bold + Italic
+    s1.fontStyle = 15; // Bold(1) | Italic(2) | Underline(4) | Strikeout(8)
     s1.showWidget = 0;
 
     // Save to test file
