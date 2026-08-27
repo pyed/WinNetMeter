@@ -1,9 +1,9 @@
 # WinNetMeter
 
-<a href="https://github.com/pyed/networkMonitorLite" title="Go to GitHub repo"><img src="https://img.shields.io/static/v1?label=pyed&message=WinNetMeter&color=blue&logo=github" alt="pyed - WinNetMeter"></a>
-<a href="https://github.com/pyed/networkMonitorLite/releases/"><img src="https://img.shields.io/github/v/release/pyed/networkMonitorLite?include_prereleases=&sort=semver&color=blue" alt="GitHub release"></a>
+<a href="https://github.com/pyed/WinNetMeter" title="Go to GitHub repo"><img src="https://img.shields.io/static/v1?label=pyed&message=WinNetMeter&color=blue&logo=github" alt="pyed - WinNetMeter"></a>
+<a href="https://github.com/pyed/WinNetMeter/releases/"><img src="https://img.shields.io/github/v/release/pyed/WinNetMeter?include_prereleases=&sort=semver&color=blue" alt="GitHub release"></a>
 <a href="#license"><img src="https://img.shields.io/badge/License-Apache_v2-red" alt="License"></a>
-<a href="https://github.com/pyed/networkMonitorLite/issues"><img src="https://img.shields.io/github/issues/pyed/networkMonitorLite" alt="issues - WinNetMeter"></a>
+<a href="https://github.com/pyed/WinNetMeter/issues"><img src="https://img.shields.io/github/issues/pyed/WinNetMeter" alt="issues - WinNetMeter"></a>
 
 **WinNetMeter** is a lightweight, zero-dependency native Windows utility that displays real-time download and upload throughput through a dynamic system tray icon, a transparent taskbar meter, and an optional status window.
 
@@ -57,7 +57,7 @@ Built in modern C++20 for 64-bit Windows 10 and 11, it operates entirely via nat
 
 ## Downloads & Releases
 
-- **Pre-built Releases**: Download official packaged archives from [GitHub Releases](https://github.com/pyed/networkMonitorLite/releases) (starting with initial release **v0.1.0**).
+- **Pre-built Releases**: Download official packaged archives from [GitHub Releases](https://github.com/pyed/WinNetMeter/releases) (starting with initial release **v0.1.0**).
 - **Self-Contained**: The release package (`WinNetMeter-v<version>-windows-x64.zip`) is fully standalone for x64 Windows with no .NET runtime or Visual C++ Redistributable requirements.
 - **CI Artifacts**: Automated continuous integration builds are produced by GitHub Actions on every commit to `main`.
 - **Code Signing**: Binaries are currently unsigned; standard Windows SmartScreen prompts may appear on first run.

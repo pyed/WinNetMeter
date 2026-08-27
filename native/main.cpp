@@ -1021,7 +1021,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_hwndTotuTitle = mkLabel(L"Total Uploaded:", ID_TOTU_TITLE, SS_LEFT);
         g_hwndTotalUp = mkLabel(L"0.00 MB", ID_TOTAL_UP, SS_RIGHT);
 
-        g_hwndAuthor = mkLabel(L"WinNetMeter v0.1.0\nFor support, visit: github.com/pyed/networkMonitorLite",
+        g_hwndAuthor = mkLabel(L"WinNetMeter v0.1.0\nFor support, visit: github.com/pyed/WinNetMeter",
                                ID_AUTHOR_LINK, SS_RIGHT | SS_NOTIFY);
 
         RefreshFontsAndRelayout(g_currentDpi);
@@ -1053,7 +1053,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 PopulateAdapters();
             }
         } else if (id == ID_AUTHOR_LINK) {
-            ShellExecuteW(nullptr, L"open", L"https://github.com/pyed/networkMonitorLite", nullptr, nullptr, SW_SHOWNORMAL);
+            ShellExecuteW(nullptr, L"open", L"https://github.com/pyed/WinNetMeter", nullptr, nullptr, SW_SHOWNORMAL);
         }
         return 0;
     }
