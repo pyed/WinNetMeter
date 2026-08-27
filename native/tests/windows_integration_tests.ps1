@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
-                 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports', 'ResourceLeak')]
+                 'ForegroundZOrder', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
+                 'ResourceLeak')]
     [string]$Check
 )
 
@@ -57,7 +58,24 @@ public static class WinNetMeterNative
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
     [DllImport("user32.dll")]
+    private static extern IntPtr GetTopWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateWindowExW(uint exStyle, string className, string windowName,
+        uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu,
+        IntPtr instance, IntPtr parameter);
+    [DllImport("user32.dll")]
+    public static extern bool DestroyWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hwnd, int command);
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y,
+        int width, int height, uint flags);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern void NotifyWinEvent(uint eventId, IntPtr hwnd, int objectId, int childId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern uint RegisterWindowMessageW(string name);
     [DllImport("user32.dll")]
@@ -110,6 +128,17 @@ public static class WinNetMeterNative
     public static void EnablePerMonitorDpi()
     {
         SetThreadDpiAwarenessContext(new IntPtr(-4));
+    }
+
+    public static bool IsAbove(IntPtr first, IntPtr second)
+    {
+        for (var window = GetTopWindow(IntPtr.Zero); window != IntPtr.Zero;
+             window = GetWindow(window, 2))
+        {
+            if (window == first) return true;
+            if (window == second) return false;
+        }
+        return false;
     }
 }
 '@
@@ -325,6 +354,49 @@ try {
                 $overlay.Rect.Left, $overlay.Rect.Top, $overlay.Rect.Right, $overlay.Rect.Bottom,
                 $taskbar.Left, $taskbar.Top, $taskbar.Right, $taskbar.Bottom)
             'TASKBAR_POSITION_OK'
+        }
+        'ForegroundZOrder' {
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            $probe = [WinNetMeterNative]::CreateWindowExW(
+                0, 'STATIC', 'WinNetMeter foreground probe', 0x10CF0000,
+                20, 20, 400, 200, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True ($probe -ne [IntPtr]::Zero) 'Failed to create foreground probe window'
+            try {
+                [void][WinNetMeterNative]::ShowWindow($probe, 5)
+                Start-Sleep -Milliseconds 250
+                $foreground = [WinNetMeterNative]::GetForegroundWindow()
+
+                for ($transition = 0; $transition -lt 4; ++$transition) {
+                    Assert-True ([WinNetMeterNative]::SetWindowPos(
+                        $probe, [IntPtr](-2), 20, 20, 400, 200, 0x0010)) 'Failed to demote foreground probe'
+                    $shown = [WinNetMeterNative]::SetWindowPos(
+                        $probe, [IntPtr](-1), 20, 20, 400, 200, 0x0010)
+                    Assert-True $shown 'Failed to show topmost foreground probe'
+                    Assert-True ([WinNetMeterNative]::IsAbove($probe, $overlay.Handle)) 'Probe did not move above overlay'
+                    [WinNetMeterNative]::NotifyWinEvent(3, $probe, 0, 0)
+
+                    $restored = $false
+                    for ($attempt = 0; $attempt -lt 20; ++$attempt) {
+                        if ([WinNetMeterNative]::IsAbove($overlay.Handle, $probe)) {
+                            $restored = $true
+                            break
+                        }
+                        Start-Sleep -Milliseconds 10
+                    }
+                    Assert-True $restored 'Foreground event did not promptly restore overlay z-order'
+                    Assert-True ([WinNetMeterNative]::GetForegroundWindow() -eq $foreground) 'Overlay z-order repair stole foreground focus'
+                }
+
+                $after = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
+                $afterOverlay = @($after | Where-Object ClassName -eq 'WinNetMeterOverlay')
+                Assert-True ($afterOverlay.Count -eq 1) 'Foreground repair duplicated the overlay'
+                Assert-True $afterOverlay[0].Visible 'Foreground repair hid the overlay'
+                Assert-True (($afterOverlay[0].ExStyle -band [uint64]0x8) -ne 0) 'Overlay lost WS_EX_TOPMOST'
+                Assert-True (($afterOverlay[0].ExStyle -band [uint64]0x08000000) -ne 0) 'Overlay lost WS_EX_NOACTIVATE'
+                'FOREGROUND_Z_ORDER_OK'
+            } finally {
+                [void][WinNetMeterNative]::DestroyWindow($probe)
+            }
         }
         'Dpi' {
             $overlay = Get-AppWindow $session 'WinNetMeterOverlay'

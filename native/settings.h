@@ -2,6 +2,17 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+constexpr int TASKBAR_METER_OFFSET_MIN = -4096;
+constexpr int TASKBAR_METER_OFFSET_MAX = 4096;
+
+inline int ClampTaskbarMeterOffset(int value) {
+    if (value < TASKBAR_METER_OFFSET_MIN) return TASKBAR_METER_OFFSET_MIN;
+    if (value > TASKBAR_METER_OFFSET_MAX) return TASKBAR_METER_OFFSET_MAX;
+    return value;
+}
+
+bool ParseTaskbarMeterOffset(const wchar_t* text, int* value);
+
 struct AppSettings {
     COLORREF down = RGB(0, 255, 100);  // Download speed color
     COLORREF up = RGB(255, 180, 0);    // Upload speed color
@@ -9,6 +20,7 @@ struct AppSettings {
     double fontSize = 8.0;             // Font size in points
     int fontStyle = 1;                 // 1 = bold, 0 = regular
     int showWidget = 1;                // 1 = show overlay widget, 0 = hide
+    int taskbarOffset = 0;             // Logical pixels from the automatic taskbar anchor
 };
 
 void LoadSettings(AppSettings* s);

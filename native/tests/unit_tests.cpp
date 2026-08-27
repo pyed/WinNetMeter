@@ -159,6 +159,45 @@ void TestSettings() {
     printf("PASS: TestSettings\n");
 }
 
+void TestTaskbarOffsetSettings() {
+    const wchar_t* path = L".\\test_taskbar_offset.ini";
+    DeleteFileW(path);
+
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 0);
+
+    AppSettings saved;
+    saved.taskbarOffset = 321;
+    SaveSettingsCustom(&saved, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 321);
+
+    saved.taskbarOffset = -456;
+    SaveSettingsCustom(&saved, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == -456);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"not-a-number", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == 0);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"999999", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == TASKBAR_METER_OFFSET_MAX);
+
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-999999", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.taskbarOffset == TASKBAR_METER_OFFSET_MIN);
+
+    int parsed = 0;
+    assert(ParseTaskbarMeterOffset(L" -120 ", &parsed) && parsed == -120);
+    assert(!ParseTaskbarMeterOffset(L"12px", &parsed));
+
+    DeleteFileW(path);
+    printf("PASS: TestTaskbarOffsetSettings\n");
+}
+
 // Test 4: Live adapter enumeration with LUID stability
 void TestLiveAdapters() {
     AdapterInfo list[64];
@@ -362,6 +401,11 @@ void TestTaskbarPlacement() {
     assert(bottom96.right - bottom96.left == 132);
     assert(bottom96.bottom - bottom96.top == 40);
 
+    const RECT bottomPositive = CalculateTaskbarOverlayRect(bottomSecondary, ABE_BOTTOM, 96, 100);
+    const RECT bottomNegative = CalculateTaskbarOverlayRect(bottomSecondary, ABE_BOTTOM, 96, -100);
+    assert(bottomPositive.left - bottom96.left == 100);
+    assert(bottomNegative.left - bottom96.left == -100);
+
     const RECT topSecondary = { 1920, 0, 4480, 60 };
     const RECT top120 = CalculateTaskbarOverlayRect(topSecondary, ABE_TOP, 120);
     AssertInside(top120, topSecondary);
@@ -372,7 +416,11 @@ void TestTaskbarPlacement() {
     AssertInside(CalculateTaskbarOverlayRect(left, ABE_LEFT, 144), left);
 
     const RECT right = { 2500, -200, 2560, 1240 };
-    AssertInside(CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192), right);
+    const RECT rightBase = CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192);
+    const RECT rightOffset = CalculateTaskbarOverlayRect(right, ABE_RIGHT, 192, -100);
+    AssertInside(rightBase, right);
+    AssertInside(rightOffset, right);
+    assert(rightOffset.top - rightBase.top == -200);
 
     const RECT wideBottom = { 0, 2080, 3840, 2160 };
     const RECT bottom168 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 168);
@@ -381,6 +429,17 @@ void TestTaskbarPlacement() {
 
     const RECT bottom192 = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 192);
     assert(bottom192.right - bottom192.left == 264);
+    const RECT bottom192Offset = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 192, 100);
+    assert(bottom192Offset.left - bottom192.left == 200);
+
+    const RECT farLeft = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 96,
+                                                     TASKBAR_METER_OFFSET_MIN);
+    const RECT farRight = CalculateTaskbarOverlayRect(wideBottom, ABE_BOTTOM, 96,
+                                                      TASKBAR_METER_OFFSET_MAX);
+    AssertInside(farLeft, wideBottom);
+    AssertInside(farRight, wideBottom);
+    assert(farLeft.left == wideBottom.left + 2);
+    assert(farRight.right == wideBottom.right - 2);
     printf("PASS: TestTaskbarPlacement\n");
 }
 
@@ -416,6 +475,7 @@ int main() {
     TestFormatting();
     TestNetSamplerMock();
     TestSettings();
+    TestTaskbarOffsetSettings();
     TestLiveAdapters();
     TestGdiResourceLeakCheck();
     TestAdapterRebindAndNoFallback();

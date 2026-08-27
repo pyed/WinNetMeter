@@ -1,6 +1,7 @@
 #include "settings.h"
 #include <shlobj.h>
 #include <stdio.h>
+#include <cerrno>
 #include <cwchar>
 #include <string>
 
@@ -10,6 +11,17 @@ static std::wstring GetDefaultSettingsPath() {
         return std::wstring(appdata) + L"\\WinNetMeter\\settings.ini";
     }
     return L"settings.ini";
+}
+
+bool ParseTaskbarMeterOffset(const wchar_t* text, int* value) {
+    if (!text || !value) return false;
+    wchar_t* end = nullptr;
+    errno = 0;
+    long parsed = wcstol(text, &end, 10);
+    while (end && (*end == L' ' || *end == L'\t')) ++end;
+    if (end == text || !end || *end != L'\0' || errno == ERANGE) return false;
+    *value = ClampTaskbarMeterOffset(static_cast<int>(parsed));
+    return true;
 }
 
 void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
@@ -25,6 +37,10 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
 
     s->fontStyle = GetPrivateProfileIntW(L"Overlay", L"FontStyle", 1, filePath);
     s->showWidget = (GetPrivateProfileIntW(L"Overlay", L"ShowWidget", 1, filePath) != 0) ? 1 : 0;
+
+    GetPrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"", num, _countof(num), filePath);
+    int taskbarOffset = 0;
+    if (ParseTaskbarMeterOffset(num, &taskbarOffset)) s->taskbarOffset = taskbarOffset;
     
     s->down = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"DownloadColor", static_cast<DWORD>(s->down), filePath));
     s->up = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"UploadColor", static_cast<DWORD>(s->up), filePath));
@@ -44,6 +60,8 @@ void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
     swprintf_s(num, L"%d", s->fontStyle);
     WritePrivateProfileStringW(L"Overlay", L"FontStyle", num, filePath);
     WritePrivateProfileStringW(L"Overlay", L"ShowWidget", s->showWidget ? L"1" : L"0", filePath);
+    swprintf_s(num, L"%d", ClampTaskbarMeterOffset(s->taskbarOffset));
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", num, filePath);
 
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
     WritePrivateProfileStringW(L"Overlay", L"DownloadColor", num, filePath);

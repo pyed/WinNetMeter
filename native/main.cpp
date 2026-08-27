@@ -20,6 +20,7 @@ enum {
     ID_TIMER = 1,
     WM_TRAYICON = WM_APP + 1,
     WM_OVERLAY_REFRESH = WM_APP + 2,
+    WM_OVERLAY_ENSURE_TOPMOST = WM_APP + 3,
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -50,6 +51,11 @@ enum {
     ID_SET_DOWN_LBL = 2009,
     ID_SET_UP_LBL = 2010,
     ID_SET_FONT_LBL = 2011,
+    ID_SET_OFFSET_LBL = 2012,
+    ID_SET_OFFSET_EDIT = 2013,
+    ID_SET_OFFSET_SPIN = 2014,
+    ID_SET_OFFSET_UNIT = 2015,
+    ID_SET_OFFSET_RESET = 2016,
 };
 
 // Colors
@@ -66,6 +72,7 @@ static const wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.SingleInstan
 static HINSTANCE g_hInst = nullptr;
 static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
+static HWINEVENTHOOK g_foregroundHook = nullptr;
 
 // Main window child controls
 static HWND g_hwndIfaceLbl = nullptr;
@@ -111,6 +118,7 @@ static void ShowMainWindow();
 static void OpenSettingsDialog();
 static void CreateOrUpdateOverlay();
 static void PositionTaskbarOverlay();
+static void EnsureTaskbarOverlayTopmost();
 static void UpdateTrayIcon();
 static void SetupTrayIcon();
 static void RemoveTrayIcon();
@@ -432,7 +440,8 @@ static void PositionTaskbarOverlay() {
 
     int dpi = static_cast<int>(GetDpiForWindow(g_hwndOverlay));
     if (dpi == 0) dpi = g_currentDpi;
-    RECT target = CalculateTaskbarOverlayRect(taskbar, edge, static_cast<UINT>(dpi));
+    RECT target = CalculateTaskbarOverlayRect(taskbar, edge, static_cast<UINT>(dpi),
+                                              g_settings.taskbarOffset);
     int width = target.right - target.left;
     int height = target.bottom - target.top;
     int stride = width * 4;
@@ -501,6 +510,24 @@ static void PositionTaskbarOverlay() {
     if (updated) {
         SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+}
+
+static void EnsureTaskbarOverlayTopmost() {
+    if (!g_hwndOverlay || !g_settings.showWidget || !IsWindowVisible(g_hwndOverlay)) return;
+
+    RECT taskbar = {};
+    UINT edge = ABE_BOTTOM;
+    if (!GetTaskbarPosition(&taskbar, &edge) || !IsTaskbarShown(taskbar, edge)) return;
+
+    SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+static void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
+                                         LONG, LONG, DWORD, DWORD) {
+    if (event == EVENT_SYSTEM_FOREGROUND && hwnd && g_hwndMain && hwnd != g_hwndOverlay) {
+        PostMessageW(g_hwndMain, WM_OVERLAY_ENSURE_TOPMOST, 0, 0);
     }
 }
 
@@ -691,9 +718,12 @@ struct SettingsDialogState {
     HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
     HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
+    HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
+    HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
     HWND hwndBtnSave = nullptr, hwndBtnCancel = nullptr;
     HFONT hFontDlg = nullptr;
     int dpi = 96;
+    int originalOffset = 0;
 };
 
 static COLORREF PickColor(HWND hwndOwner, COLORREF initColor) {
@@ -752,8 +782,13 @@ static void RelayoutSettingsDialog(SettingsDialogState* state, int dpi) {
         { state->hwndLblFont,   20,  90, 140, 25 },
         { state->hwndBtnFont,  170,  86,  80, 25 },
         { state->hwndPreview,  270,  16, 120, 80 },
-        { state->hwndBtnSave,  230, 140,  75, 28 },
-        { state->hwndBtnCancel,315, 140,  75, 28 },
+        { state->hwndLblOffset, 20, 125, 145, 25 },
+        { state->hwndEditOffset,170,121,  65, 25 },
+        { state->hwndSpinOffset,235,121,  18, 25 },
+        { state->hwndLblOffsetUnit,258,125,  25, 25 },
+        { state->hwndBtnOffsetReset,300,121,90, 25 },
+        { state->hwndBtnSave,  230, 175,  75, 28 },
+        { state->hwndBtnCancel,315, 175,  75, 28 },
     };
 
     for (const auto& it : items) {
@@ -855,6 +890,27 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         state->hwndLblFont = mkLbl(L"Overlay Font:", ID_SET_FONT_LBL);
         state->hwndBtnFont = mkBtn(L"Choose", ID_SET_FONT_BTN);
 
+        state->hwndLblOffset = mkLbl(L"Taskbar meter offset:", ID_SET_OFFSET_LBL);
+        state->hwndEditOffset = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_AUTOHSCROLL,
+            0, 0, 0, 0, hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_EDIT)), g_hInst, nullptr);
+        state->hwndSpinOffset = CreateWindowExW(
+            0, UPDOWN_CLASSW, nullptr,
+            WS_CHILD | WS_VISIBLE | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,
+            0, 0, 0, 0, hwnd,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_SPIN)), g_hInst, nullptr);
+        state->hwndLblOffsetUnit = mkLbl(L"px", ID_SET_OFFSET_UNIT);
+        state->hwndBtnOffsetReset = mkBtn(L"Reset", ID_SET_OFFSET_RESET);
+        SendMessageW(state->hwndSpinOffset, UDM_SETRANGE32,
+                     static_cast<WPARAM>(static_cast<INT_PTR>(TASKBAR_METER_OFFSET_MIN)),
+                     static_cast<LPARAM>(TASKBAR_METER_OFFSET_MAX));
+        SendMessageW(state->hwndSpinOffset, UDM_SETBUDDY,
+                     reinterpret_cast<WPARAM>(state->hwndEditOffset), 0);
+        SendMessageW(state->hwndSpinOffset, UDM_SETPOS32, 0,
+                     static_cast<LPARAM>(state->tempSettings.taskbarOffset));
+
         wchar_t prevCls[] = L"SettingsPreviewPanel";
         WNDCLASSEXW pwc = { sizeof(pwc) };
         pwc.lpfnWndProc = SettingsPreviewWndProc;
@@ -890,7 +946,19 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     }
     case WM_COMMAND: {
         int id = LOWORD(wp);
-        if (id == ID_SET_DOWN_BTN && state) {
+        int code = HIWORD(wp);
+        if (id == ID_SET_OFFSET_EDIT && code == EN_CHANGE && state) {
+            wchar_t text[32] = {};
+            GetWindowTextW(state->hwndEditOffset, text, _countof(text));
+            int offset = 0;
+            if (ParseTaskbarMeterOffset(text, &offset)) {
+                state->tempSettings.taskbarOffset = offset;
+                g_settings.taskbarOffset = offset;
+                PositionTaskbarOverlay();
+            }
+        } else if (id == ID_SET_OFFSET_RESET && state) {
+            SetWindowTextW(state->hwndEditOffset, L"0");
+        } else if (id == ID_SET_DOWN_BTN && state) {
             state->tempSettings.down = PickColor(hwnd, state->tempSettings.down);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
         } else if (id == ID_SET_UP_BTN && state) {
@@ -900,12 +968,26 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             PickFont(hwnd, &state->tempSettings, state->dpi);
             InvalidateRect(state->hwndPreview, nullptr, TRUE);
         } else if (id == ID_SET_SAVE_BTN && state) {
+            wchar_t text[32] = {};
+            GetWindowTextW(state->hwndEditOffset, text, _countof(text));
+            int offset = 0;
+            if (!ParseTaskbarMeterOffset(text, &offset)) {
+                MessageBoxW(hwnd, L"Enter a whole number from -4096 to 4096.",
+                            L"WinNetMeter", MB_OK | MB_ICONWARNING);
+                SetFocus(state->hwndEditOffset);
+                return 0;
+            }
+            state->tempSettings.taskbarOffset = offset;
             g_settings = state->tempSettings;
             SaveSettings(&g_settings);
             RefreshFontsAndRelayout(g_currentDpi);
             CreateOrUpdateOverlay();
             DestroyWindow(hwnd);
         } else if (id == ID_SET_CANCEL_BTN) {
+            if (state) {
+                g_settings.taskbarOffset = state->originalOffset;
+                PositionTaskbarOverlay();
+            }
             DestroyWindow(hwnd);
         }
         return 0;
@@ -926,6 +1008,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         }
         return 0;
     case WM_CLOSE:
+        if (state) {
+            g_settings.taskbarOffset = state->originalOffset;
+            PositionTaskbarOverlay();
+        }
         DestroyWindow(hwnd);
         return 0;
     }
@@ -938,6 +1024,7 @@ static void OpenSettingsDialog() {
     state.hwndDlg = nullptr;
     state.hwndPreview = nullptr;
     state.hFontDlg = nullptr;
+    state.originalOffset = g_settings.taskbarOffset;
 
     wchar_t cls[] = L"WinNetMeterSettings";
     WNDCLASSEXW wc = { sizeof(wc) };
@@ -948,7 +1035,7 @@ static void OpenSettingsDialog() {
     RegisterClassExW(&wc);
 
     int w = ScaleDpi(420, g_currentDpi);
-    int h = ScaleDpi(230, g_currentDpi);
+    int h = ScaleDpi(265, g_currentDpi);
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
@@ -1061,6 +1148,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == ID_TIMER) {
             OnTimerTick();
         }
+        return 0;
+    case WM_OVERLAY_ENSURE_TOPMOST:
+        EnsureTaskbarOverlayTopmost();
         return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -1197,6 +1287,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
+    g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                                       nullptr, OnForegroundChanged, 0, 0,
+                                       WINEVENT_OUTOFCONTEXT);
+
     MSG msg = {};
     BOOL result = 0;
     while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
@@ -1204,6 +1298,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         DispatchMessageW(&msg);
     }
     if (result == -1 && IsWindow(hwnd)) DestroyWindow(hwnd);
+
+    if (g_foregroundHook) {
+        UnhookWinEvent(g_foregroundHook);
+        g_foregroundHook = nullptr;
+    }
 
     // Cleanup resources
     if (g_fontLabel) DeleteObject(g_fontLabel);
