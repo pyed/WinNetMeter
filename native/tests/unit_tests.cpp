@@ -22,6 +22,7 @@ static void AssertSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
 
 void TestSpeedFormatting() {
     AssertSpeed(0, MinimumSpeedUnit::Auto, 2, L"0 B/s");
+    AssertSpeed(1, MinimumSpeedUnit::Auto, 2, L"1 B/s");
     AssertSpeed(512, MinimumSpeedUnit::Auto, 2, L"512 B/s");
     AssertSpeed(1024, MinimumSpeedUnit::Auto, 2, L"1.00 KB/s");
     AssertSpeed(1536, MinimumSpeedUnit::Auto, 2, L"1.50 KB/s");
@@ -63,8 +64,10 @@ void TestSpeedFormatting() {
     AssertSpeed(1024, MinimumSpeedUnit::Auto, 2, L"1.00 KB/s");
     AssertSpeed(1048575, MinimumSpeedUnit::Auto, 2, L"1024.00 KB/s");
     AssertSpeed(1048576, MinimumSpeedUnit::Auto, 2, L"1.00 MB/s");
+    AssertSpeed(1048577, MinimumSpeedUnit::Auto, 2, L"1.00 MB/s");
     AssertSpeed(1073741823, MinimumSpeedUnit::Auto, 2, L"1024.00 MB/s");
     AssertSpeed(1073741824, MinimumSpeedUnit::Auto, 2, L"1.00 GB/s");
+    AssertSpeed(1073741825, MinimumSpeedUnit::Auto, 2, L"1.00 GB/s");
     printf("PASS: TestSpeedFormattingBoundaries\n");
 
     AssertSpeed(ULLONG_MAX, MinimumSpeedUnit::Auto, 2, L"17179869184.00 GB/s");
