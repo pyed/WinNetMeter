@@ -1,0 +1,22 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+const src = readFileSync(resolve('native/main.cpp'), 'utf8');
+
+if (!src.includes('SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)')) {
+    console.error('FAIL: main.cpp must initialize Per-Monitor V2 DPI awareness');
+    process.exit(1);
+}
+
+if (!src.includes('WM_DPICHANGED')) {
+    console.error('FAIL: main.cpp must handle WM_DPICHANGED');
+    process.exit(1);
+}
+
+if (!src.includes('MulDiv')) {
+    console.error('FAIL: main.cpp must use DPI scaling helper');
+    process.exit(1);
+}
+
+console.log('DPI awareness verification passed');
+process.exit(0);

@@ -1,19 +1,58 @@
 #include "network.h"
+#include <stdio.h>
 #include <stdlib.h>
+#include <cwchar>
 
-// Fills `row` from the live table; false if index not present.
-// SDK 10.0.26100 user-mode GetIfTable2: one arg, caller-freeable via FreeMibTable.
+void FormatSpeed(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
+    if (bytesPerSecond < 1024) {
+        swprintf_s(out, maxLen, L"%llu B/s", static_cast<unsigned long long>(bytesPerSecond));
+    } else if (bytesPerSecond < 1024ULL * 1024) {
+        swprintf_s(out, maxLen, L"%.2f KB/s", static_cast<double>(bytesPerSecond) / 1024.0);
+    } else if (bytesPerSecond < 1024ULL * 1024 * 1024) {
+        swprintf_s(out, maxLen, L"%.2f MB/s", static_cast<double>(bytesPerSecond) / (1024.0 * 1024.0));
+    } else {
+        swprintf_s(out, maxLen, L"%.2f GB/s", static_cast<double>(bytesPerSecond) / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+
+void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen) {
+    if (bytes < 1024) {
+        swprintf_s(out, maxLen, L"%llu B", static_cast<unsigned long long>(bytes));
+    } else if (bytes < 1024ULL * 1024) {
+        swprintf_s(out, maxLen, L"%.2f KB", static_cast<double>(bytes) / 1024.0);
+    } else if (bytes < 1024ULL * 1024 * 1024) {
+        swprintf_s(out, maxLen, L"%.2f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    } else {
+        swprintf_s(out, maxLen, L"%.2f GB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+
+void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
+    if (bytesPerSecond < 1024) {
+        swprintf_s(out, maxLen, L"%lluB", static_cast<unsigned long long>(bytesPerSecond));
+    } else if (bytesPerSecond < 1024ULL * 1024) {
+        swprintf_s(out, maxLen, L"%lluK", static_cast<unsigned long long>(bytesPerSecond / 1024ULL));
+    } else if (bytesPerSecond < 1024ULL * 1024 * 1024) {
+        swprintf_s(out, maxLen, L"%lluM", static_cast<unsigned long long>(bytesPerSecond / (1024ULL * 1024ULL)));
+    } else {
+        swprintf_s(out, maxLen, L"%lluG", static_cast<unsigned long long>(bytesPerSecond / (1024ULL * 1024ULL * 1024ULL)));
+    }
+}
+
+// Fills `row` from the live table; returns false if index not present.
 static bool FetchRow(DWORD index, MIB_IF_ROW2* row) {
     MIB_IF_TABLE2* table = nullptr;
-    if (GetIfTable2(&table) != NO_ERROR || !table)
+    if (GetIfTable2(&table) != NO_ERROR || !table) {
         return false;
+    }
     bool found = false;
-    for (DWORD i = 0; i < table->NumEntries; ++i)
+    for (DWORD i = 0; i < table->NumEntries; ++i) {
         if (table->Table[i].InterfaceIndex == index) {
             *row = table->Table[i];
             found = true;
             break;
         }
+    }
     FreeMibTable(table);
     return found;
 }
@@ -24,7 +63,8 @@ int GetAdapters(AdapterInfo* out, int maxCount) {
     if (GetIfTable2(&table) == NO_ERROR && table) {
         for (DWORD i = 0; i < table->NumEntries && count < maxCount; ++i) {
             const auto& r = table->Table[i];
-            if (r.Type == ADAPTER_ETHERNET || r.Type == ADAPTER_80211 || r.Type == ADAPTER_GIGABIT) {
+            if (!r.InterfaceAndOperStatusFlags.FilterInterface &&
+                (r.Type == ADAPTER_ETHERNET || r.Type == ADAPTER_80211 || r.Type == ADAPTER_GIGABIT)) {
                 out[count].index = r.InterfaceIndex;
                 wcsncpy_s(out[count].name, _countof(out[count].name), r.Alias, _TRUNCATE);
                 ++count;
@@ -35,44 +75,61 @@ int GetAdapters(AdapterInfo* out, int maxCount) {
     return count;
 }
 
-static LARGE_INTEGER qpcFreq() {
-    static LARGE_INTEGER f = [] { QueryPerformanceFrequency(&f); return f; }();
+static LARGE_INTEGER GetQpcFrequency() {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
     return f;
 }
 
+void NetSampler::UpdateMock(ULONGLONG inBytes, ULONGLONG outBytes, LARGE_INTEGER now,
+                            LARGE_INTEGER freq, IF_OPER_STATUS operStatus,
+                            ULONGLONG* outDownBps, ULONGLONG* outUpBps) {
+    *outDownBps = 0;
+    *outUpBps = 0;
+
+    if (operStatus != IfOperStatusUp) {
+        return;
+    }
+
+    if (!valid) {
+        lastIn = inBytes;
+        lastOut = outBytes;
+        lastQpc = now;
+        valid = true;
+        return;
+    }
+
+    double secs = static_cast<double>(now.QuadPart - lastQpc.QuadPart) / static_cast<double>(freq.QuadPart);
+    if (secs < 0.001) {
+        secs = 0.001;
+    }
+
+    ULONGLONG dIn = (inBytes >= lastIn) ? (inBytes - lastIn) : 0;
+    ULONGLONG dOut = (outBytes >= lastOut) ? (outBytes - lastOut) : 0;
+
+    lastIn = inBytes;
+    lastOut = outBytes;
+    lastQpc = now;
+
+    totalIn += dIn;
+    totalOut += dOut;
+
+    *outDownBps = static_cast<ULONGLONG>(static_cast<double>(dIn) / secs);
+    *outUpBps = static_cast<ULONGLONG>(static_cast<double>(dOut) / secs);
+}
+
 bool NetSampler::Sample(DWORD index, ULONGLONG* outDownBps, ULONGLONG* outUpBps) {
-    MIB_IF_ROW2 row;
-    if (!FetchRow(index, &row))
+    MIB_IF_ROW2 row{};
+    if (!FetchRow(index, &row)) {
+        *outDownBps = 0;
+        *outUpBps = 0;
         return false;
-    *outDownBps = *outUpBps = 0;
-    if (row.OperStatus != IfOperStatusUp)
-        return true; // present but down: zero speed, totals unchanged
+    }
 
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    ULONGLONG inB = row.InOctets, outB = row.OutOctets;
+    LARGE_INTEGER freq = GetQpcFrequency();
 
-    if (!valid) {
-        lastIn = inB;
-        lastOut = outB;
-        totalIn = inB;   // C# shows the adapter's cumulative totals at selection time
-        totalOut = outB;
-        lastQpc = now;
-        valid = true;
-        return true;
-    }
-
-    double secs = static_cast<double>(now.QuadPart - lastQpc.QuadPart) / static_cast<double>(qpcFreq().QuadPart);
-    if (secs < 0.001)
-        secs = 0.001;
-    ULONGLONG dIn = inB >= lastIn ? inB - lastIn : 0; // counter reset/wrap -> 0
-    ULONGLONG dOut = outB >= lastOut ? outB - lastOut : 0;
-    lastIn = inB;
-    lastOut = outB;
-    lastQpc = now;
-    totalIn += dIn;
-    totalOut += dOut;
-    *outDownBps = static_cast<ULONGLONG>(dIn / secs);
-    *outUpBps = static_cast<ULONGLONG>(dOut / secs);
+    UpdateMock(row.InOctets, row.OutOctets, now, freq, row.OperStatus, outDownBps, outUpBps);
     return true;
 }
