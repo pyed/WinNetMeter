@@ -1,0 +1,17 @@
+#include <windows.h>
+1 ICON "icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,1,0
+PRODUCTVERSION 1,0,1,0
+BEGIN
+  VALUE "CompanyName", "mcagriaksoy"
+  VALUE "FileDescription", "Lightweight network speed monitor with tray icon and taskbar widget."
+  VALUE "FileVersion", "1.0.1.0"
+  VALUE "InternalName", "NetworkMonitorLite"
+  VALUE "LegalCopyright", "mcagriaksoy"
+  VALUE "OriginalFilename", "NetworkMonitorLite.exe"
+  VALUE "ProductVersion", "1.0.1"
+  VALUE "ProductName", "NetworkMonitor Lite"
+  VALUE "LegalTrademarks", "NetworkMonitorLite"
+END
