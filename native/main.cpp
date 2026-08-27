@@ -414,6 +414,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
+    if (!g_settings.showWidget) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
+    }
 
     RECT taskbar = {};
     UINT edge = ABE_BOTTOM;
