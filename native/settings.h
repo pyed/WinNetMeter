@@ -14,6 +14,7 @@ struct AppSettings {
 
 void LoadSettings(AppSettings* s);
 void SaveSettings(const AppSettings* s);
+void GetSettingsPath(wchar_t* buf, size_t maxLen);
 
 void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath);
 void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath);

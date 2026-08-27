@@ -15,13 +15,12 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "mcagriaksoy"
-            VALUE "FileDescription", "Lightweight network speed monitor with tray icon and taskbar widget."
+            VALUE "FileDescription", "Lightweight Windows network throughput monitor with system tray icon and taskbar widget."
             VALUE "FileVersion", "0.1.0"
-            VALUE "InternalName", "NetworkMonitorLite"
-            VALUE "LegalCopyright", "Copyright (c) 2025-2026 mcagriaksoy"
-            VALUE "OriginalFilename", "NetworkMonitorLite.exe"
-            VALUE "ProductName", "NetworkMonitorLite"
+            VALUE "InternalName", "WinNetMeter"
+            VALUE "LegalCopyright", "Copyright (c) 2025-2026"
+            VALUE "OriginalFilename", "WinNetMeter.exe"
+            VALUE "ProductName", "WinNetMeter"
             VALUE "ProductVersion", "0.1.0"
         END
     END

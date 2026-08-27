@@ -1,4 +1,4 @@
-// NetworkMonitorLite - Native Windows x64 rewrite
+// WinNetMeter - Native Windows x64 network throughput monitor
 // Single small dependency-free executable
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -289,7 +289,7 @@ static void UpdateTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hNewIcon;
-    swprintf_s(nid.szTip, _countof(nid.szTip), L"Network Monitor\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
+    swprintf_s(nid.szTip, _countof(nid.szTip), L"WinNetMeter\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
 
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 
@@ -314,7 +314,7 @@ static void SetupTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = g_hCurrentTrayIcon;
-    swprintf_s(nid.szTip, _countof(nid.szTip), L"Network Monitor\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
+    swprintf_s(nid.szTip, _countof(nid.szTip), L"WinNetMeter\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
@@ -494,7 +494,7 @@ static void CreateOrUpdateOverlay() {
     }
 
     if (!g_hwndOverlay) {
-        wchar_t cls[] = L"NetworkMonitorLiteOverlay";
+        wchar_t cls[] = L"WinNetMeterOverlay";
         WNDCLASSEXW wc = { sizeof(wc) };
         wc.style = CS_DBLCLKS;
         wc.lpfnWndProc = OverlayWndProc;
@@ -933,7 +933,7 @@ static void OpenSettingsDialog() {
     state.hwndPreview = nullptr;
     state.hFontDlg = nullptr;
 
-    wchar_t cls[] = L"NetworkMonitorLiteSettings";
+    wchar_t cls[] = L"WinNetMeterSettings";
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = SettingsWndProc;
     wc.hInstance = g_hInst;
@@ -1014,7 +1014,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_hwndTotuTitle = mkLabel(L"Total Uploaded:", ID_TOTU_TITLE, SS_LEFT);
         g_hwndTotalUp = mkLabel(L"0.00 MB", ID_TOTAL_UP, SS_RIGHT);
 
-        g_hwndAuthor = mkLabel(L"networkMonitorLite\u2122 by mcagriaksoy - 2025\nFor support, visit: github.com/mcagriaksoy/NetworkMonitorLite",
+        g_hwndAuthor = mkLabel(L"WinNetMeter v0.1.0\nFor support, visit: github.com/pyed/networkMonitorLite",
                                ID_AUTHOR_LINK, SS_RIGHT | SS_NOTIFY);
 
         RefreshFontsAndRelayout(g_currentDpi);
@@ -1046,7 +1046,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 PopulateAdapters();
             }
         } else if (id == ID_AUTHOR_LINK) {
-            ShellExecuteW(nullptr, L"open", L"https://github.com/mcagriaksoy/NetworkMonitorLite", nullptr, nullptr, SW_SHOWNORMAL);
+            ShellExecuteW(nullptr, L"open", L"https://github.com/pyed/networkMonitorLite", nullptr, nullptr, SW_SHOWNORMAL);
         }
         return 0;
     }
@@ -1153,7 +1153,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     LoadSettings(&g_settings);
 
-    wchar_t cls[] = L"NetworkMonitorLiteMain";
+    wchar_t cls[] = L"WinNetMeterMain";
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = hInst;
@@ -1171,7 +1171,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    HWND hwnd = CreateWindowExW(0, cls, L"Network Monitor Lite\u2122",
+    HWND hwnd = CreateWindowExW(0, cls, L"WinNetMeter",
                                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                 x, y, w, h, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) {

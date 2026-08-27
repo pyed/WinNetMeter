@@ -7,7 +7,7 @@
 static std::wstring GetDefaultSettingsPath() {
     wchar_t appdata[MAX_PATH] = {};
     if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata) == S_OK) {
-        return std::wstring(appdata) + L"\\NetworkMonitorLite\\settings.ini";
+        return std::wstring(appdata) + L"\\WinNetMeter\\settings.ini";
     }
     return L"settings.ini";
 }
@@ -62,4 +62,10 @@ void LoadSettings(AppSettings* s) {
 void SaveSettings(const AppSettings* s) {
     std::wstring path = GetDefaultSettingsPath();
     SaveSettingsCustom(s, path.c_str());
+}
+
+void GetSettingsPath(wchar_t* buf, size_t maxLen) {
+    if (!buf || maxLen == 0) return;
+    std::wstring path = GetDefaultSettingsPath();
+    wcsncpy_s(buf, maxLen, path.c_str(), _TRUNCATE);
 }

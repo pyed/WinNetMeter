@@ -18,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build NetworkMonitorLite (Release x64)
+      - name: Build WinNetMeter (Release x64)
         shell: cmd
         working-directory: native
         run: build.bat
@@ -32,11 +32,11 @@ jobs:
         shell: pwsh
         run: |
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v0.1.0' }
-          $pkgName = "NetworkMonitorLite-$tag-windows-x64"
+          $pkgName = "WinNetMeter-$tag-windows-x64"
           $stagingDir = "dist/$pkgName"
 
           New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-          Copy-Item "native/out/NetworkMonitorLite.exe" -Destination "$stagingDir/" -Force
+          Copy-Item "native/out/WinNetMeter.exe" -Destination "$stagingDir/" -Force
           Copy-Item "README.md" -Destination "$stagingDir/" -Force
           Copy-Item "LICENSE" -Destination "$stagingDir/" -Force
 
@@ -48,8 +48,8 @@ jobs:
           $zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
           "$zipHash *$pkgName.zip`r`n" | Out-File -FilePath "dist/$pkgName.zip.sha256" -Encoding ascii -NoNewline
 
-          $exeHash = (Get-FileHash -Path "native/out/NetworkMonitorLite.exe" -Algorithm SHA256).Hash.ToLower()
-          "$exeHash *NetworkMonitorLite.exe`r`n" | Out-File -FilePath "dist/NetworkMonitorLite.exe.sha256" -Encoding ascii -NoNewline
+          $exeHash = (Get-FileHash -Path "native/out/WinNetMeter.exe" -Algorithm SHA256).Hash.ToLower()
+          "$exeHash *WinNetMeter.exe`r`n" | Out-File -FilePath "dist/WinNetMeter.exe.sha256" -Encoding ascii -NoNewline
 
           Write-Host "Generated release artifacts in dist/:"
           Get-ChildItem dist | Format-Table Name, Length
@@ -68,12 +68,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $pkgName = "NetworkMonitorLite-$tag-windows-x64"
+          $pkgName = "WinNetMeter-$tag-windows-x64"
 
           gh release create $tag `
             "dist/$pkgName.zip" `
             "dist/$pkgName.zip.sha256" `
-            "native/out/NetworkMonitorLite.exe" `
-            "dist/NetworkMonitorLite.exe.sha256" `
-            --title "NetworkMonitorLite $tag" `
+            "native/out/WinNetMeter.exe" `
+            "dist/WinNetMeter.exe.sha256" `
+            --title "WinNetMeter $tag" `
             --generate-notes

@@ -151,6 +151,12 @@ void TestSettings() {
     assert(s2.showWidget == s1.showWidget);
 
     DeleteFileW(L".\\test_settings.ini");
+
+    // Verify default settings path resolves to WinNetMeter\settings.ini
+    wchar_t defaultPath[MAX_PATH] = {};
+    GetSettingsPath(defaultPath, _countof(defaultPath));
+    assert(wcsstr(defaultPath, L"\\WinNetMeter\\settings.ini") != nullptr);
+
     printf("PASS: TestSettings\n");
 }
 
@@ -341,7 +347,7 @@ void TestAdapterRebindAndNoFallback() {
 }
 
 int main() {
-    printf("Running NetworkMonitorLite Native Robustness & Regression Tests...\n");
+    printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestFormatting();
     TestNetSamplerMock();
     TestSettings();

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Build: NetworkMonitorLite.exe (static CRT, Release)
+rem Build: WinNetMeter.exe (static CRT, Release)
 
 where cl >nul 2>&1
 if %ERRORLEVEL% equ 0 goto compile
@@ -36,5 +36,5 @@ where cl >nul 2>&1 || (echo ERROR: MSVC x64 compiler not found & exit /b 1)
 
 if not exist out mkdir out
 rc /nologo /fo out\app.res app.rc || exit /b 1
-cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /Fo"out\\" /Fe"out\NetworkMonitorLite.exe" main.cpp network.cpp settings.cpp out\app.res /link iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib /SUBSYSTEM:WINDOWS
+cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /Fo"out\\" /Fe"out\WinNetMeter.exe" main.cpp network.cpp settings.cpp out\app.res /link iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib /SUBSYSTEM:WINDOWS
 exit /b %ERRORLEVEL%
