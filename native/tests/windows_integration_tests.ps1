@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
-                 'ForegroundZOrder', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
+                 'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay')]
     [string]$Check
 )
@@ -92,8 +92,33 @@ public static class WinNetMeterNative
     private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")]
     public static extern uint GetGuiResources(IntPtr process, uint flags);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    public static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr newLong);
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
     [DllImport("shell32.dll")]
     private static extern UIntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
+
+    public static RECT GetMonitorRect(IntPtr hwnd)
+    {
+        IntPtr hMon = MonitorFromWindow(hwnd, 1);
+        MONITORINFO mi = new MONITORINFO();
+        mi.cbSize = (uint)Marshal.SizeOf(typeof(MONITORINFO));
+        GetMonitorInfo(hMon, ref mi);
+        return mi.rcMonitor;
+    }
 
     public static WindowInfo[] GetWindows(uint wantedProcessId)
     {
@@ -286,7 +311,7 @@ if ($Check -eq 'StaticRuntime') {
 }
 
 if ($Check -eq 'Imports') {
-    $allowlist = @('COMCTL32.DLL', 'COMDLG32.DLL', 'GDI32.DLL', 'IPHLPAPI.DLL',
+    $allowlist = @('COMCTL32.DLL', 'COMDLG32.DLL', 'DWMAPI.DLL', 'GDI32.DLL', 'IPHLPAPI.DLL',
                    'KERNEL32.DLL', 'SHELL32.DLL', 'USER32.DLL')
     $importControl = @('UNEXPECTED_TEST.DLL' | Where-Object { $_ -notin $allowlist }).Count -eq 1
     Assert-True $importControl 'Import allowlist negative control did not detect an unexpected DLL'
@@ -403,6 +428,101 @@ try {
                 Assert-True (($afterOverlay[0].ExStyle -band [uint64]0x8) -ne 0) 'Overlay lost WS_EX_TOPMOST'
                 Assert-True (($afterOverlay[0].ExStyle -band [uint64]0x08000000) -ne 0) 'Overlay lost WS_EX_NOACTIVATE'
                 'FOREGROUND_Z_ORDER_OK'
+            } finally {
+                [void][WinNetMeterNative]::DestroyWindow($probe)
+            }
+        }
+        'Fullscreen' {
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            Assert-True $overlay.Visible 'Overlay is not initially visible'
+
+            # 1. Create a normal top-level probe window
+            # WS_OVERLAPPEDWINDOW | WS_VISIBLE = 0x10CF0000
+            $probe = [WinNetMeterNative]::CreateWindowExW(
+                0, 'STATIC', 'WinNetMeter fullscreen probe', 0x10CF0000,
+                50, 50, 600, 400, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True ($probe -ne [IntPtr]::Zero) 'Failed to create fullscreen probe window'
+            try {
+                # 2. Make probe foreground
+                [void][WinNetMeterNative]::ShowWindow($probe, 5)
+                [void][WinNetMeterNative]::SetForegroundWindow($probe)
+                [WinNetMeterNative]::NotifyWinEvent(3, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+
+                # 3. Normal windowed probe -> overlay MUST remain visible
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True $overlayWnd.Visible 'Overlay became hidden for normal windowed probe'
+
+                # 4. Maximize probe normally (SW_MAXIMIZE = 3)
+                [void][WinNetMeterNative]::ShowWindow($probe, 3)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True $overlayWnd.Visible 'Overlay became hidden for normally maximized probe'
+
+                # 5. Make SAME HWND fullscreen (borderless + monitor sized)
+                $mon = [WinNetMeterNative]::GetMonitorRect($probe)
+                $width = $mon.Right - $mon.Left
+                $height = $mon.Bottom - $mon.Top
+                # Style = WS_POPUP | WS_VISIBLE = 0x90000000
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0x90000000)
+                [void][WinNetMeterNative]::SetWindowPos($probe, [IntPtr](-1), $mon.Left, $mon.Top, $width, $height, 0x0040)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+
+                # 6. Verify overlay hides promptly
+                $hidden = $false
+                for ($attempt = 0; $attempt -lt 30; ++$attempt) {
+                    $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                    if (-not $overlayWnd.Visible) {
+                        $hidden = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 50
+                }
+                Assert-True $hidden 'Overlay did not hide for fullscreen window'
+
+                # 7. Model the Win+D transient: same foreground/fullscreen HWND, now minimized.
+                # WS_POPUP | WS_VISIBLE | WS_MINIMIZE = 0xB0000000
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0xB0000000)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True $overlayWnd.Visible 'Overlay stayed hidden for minimized fullscreen foreground'
+
+                # Clearing WS_MINIMIZE must classify the same HWND as genuine fullscreen again.
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0x90000000)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True (-not $overlayWnd.Visible) 'Overlay did not hide after clearing WS_MINIMIZE'
+
+                # 8. Restore SAME HWND to normal windowed bounds
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0x10CF0000)
+                [void][WinNetMeterNative]::SetWindowPos($probe, [IntPtr](-2), 50, 50, 600, 400, 0x0040)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+
+                # 9. Verify overlay restores promptly
+                $restored = $false
+                for ($attempt = 0; $attempt -lt 30; ++$attempt) {
+                    $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                    if ($overlayWnd.Visible) {
+                        $restored = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 50
+                }
+                Assert-True $restored 'Overlay did not restore after exiting fullscreen'
+
+                # 10. Verify focus was not stolen by WinNetMeter
+                $fg = [WinNetMeterNative]::GetForegroundWindow()
+                Assert-True ($fg -eq $probe) 'WinNetMeter stole foreground focus'
+
+                # 11. Verify exactly one overlay exists
+                $windows = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
+                $overlays = @($windows | Where-Object ClassName -eq 'WinNetMeterOverlay')
+                Assert-True ($overlays.Count -eq 1) 'Duplicate overlay detected'
+
+                'FULLSCREEN_VISIBILITY_OK'
             } finally {
                 [void][WinNetMeterNative]::DestroyWindow($probe)
             }

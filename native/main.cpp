@@ -8,6 +8,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <cwchar>
@@ -21,6 +22,7 @@ enum {
     WM_TRAYICON = WM_APP + 1,
     WM_OVERLAY_REFRESH = WM_APP + 2,
     WM_OVERLAY_ENSURE_TOPMOST = WM_APP + 3,
+    WM_CHECK_FULLSCREEN = WM_APP + 4,
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -75,6 +77,7 @@ static HINSTANCE g_hInst = nullptr;
 static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
 static HWINEVENTHOOK g_foregroundHook = nullptr;
+static HWINEVENTHOOK g_locationHook = nullptr;
 
 // Main window child controls
 static HWND g_hwndIfaceLbl = nullptr;
@@ -412,6 +415,89 @@ static bool IsTaskbarShown(const RECT& expected, UINT edge) {
     return visibleThickness * 2 >= expectedThickness;
 }
 
+// ---- Fullscreen Detection ----------------------------------------------------
+static bool IsShellOrDesktopWindow(HWND hwnd) {
+    if (!hwnd) return false;
+    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) return true;
+
+    wchar_t cls[64] = {};
+    if (GetClassNameW(hwnd, cls, _countof(cls)) > 0) {
+        if (wcscmp(cls, L"Progman") == 0 ||
+            wcscmp(cls, L"WorkerW") == 0 ||
+            wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+            wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
+    // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) returns the actual visible
+    // bounds, excluding invisible resize borders that GetWindowRect includes on Win10/11.
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out, sizeof(*out)))) {
+        return true;
+    }
+    return GetWindowRect(hwnd, out) != FALSE;
+}
+
+static bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
+    if (!targetMonitor) return false;
+
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+
+    // A hidden or minimized window is never fullscreen application content
+    if (!IsWindowVisible(fg)) return false;
+    if (IsIconic(fg) || (GetWindowLongPtrW(fg, GWL_STYLE) & WS_MINIMIZE) != 0) return false;
+
+    // Normalize to root window to avoid classifying child controls/tooltips/menus
+    HWND root = GetAncestor(fg, GA_ROOT);
+    if (root) fg = root;
+
+    // Don't classify our own windows or shell/desktop surfaces as fullscreen
+    if (fg == g_hwndOverlay || fg == g_hwndMain) return false;
+    if (IsShellOrDesktopWindow(fg)) return false;
+
+    // Check which monitor the foreground window is on
+    HMONITOR fgMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
+    if (!fgMonitor || fgMonitor != targetMonitor) return false;
+
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(fgMonitor, &mi)) return false;
+
+    RECT wndRect = {};
+    if (!GetVisibleWindowBounds(fg, &wndRect)) return false;
+
+    if (!IsWindowRectFullscreen(wndRect, mi.rcMonitor)) return false;
+
+    // Normal maximized window under taskbar auto-hide:
+    // Has WS_CAPTION and is zoomed (maximized), occupying rcWork.
+    // Genuine fullscreen apps (F11, games, video) remove WS_CAPTION or use WS_POPUP.
+    LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
+    if ((style & WS_CAPTION) == WS_CAPTION && (style & WS_MAXIMIZE) != 0) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool ShouldShowTaskbarMeter(RECT* outTaskbar = nullptr, UINT* outEdge = nullptr) {
+    if (!g_settings.showWidget) return false;
+
+    RECT taskbar = {};
+    UINT edge = ABE_BOTTOM;
+    if (!GetTaskbarPosition(&taskbar, &edge)) return false;
+    if (!IsTaskbarShown(taskbar, edge)) return false;
+
+    HMONITOR taskbarMon = MonitorFromRect(&taskbar, MONITOR_DEFAULTTOPRIMARY);
+    if (IsForegroundFullscreenOnMonitor(taskbarMon)) return false;
+
+    if (outTaskbar) *outTaskbar = taskbar;
+    if (outEdge) *outEdge = edge;
+    return true;
+}
+
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: {
@@ -440,19 +526,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
-    if (!g_settings.showWidget) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
 
     RECT taskbar = {};
     UINT edge = ABE_BOTTOM;
-    if (!GetTaskbarPosition(&taskbar, &edge)) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
-    if (!IsTaskbarShown(taskbar, edge)) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
+    if (!ShouldShowTaskbarMeter(&taskbar, &edge)) {
+        if (IsWindowVisible(g_hwndOverlay)) {
+            ShowWindow(g_hwndOverlay, SW_HIDE);
+        }
         return;
     }
 
@@ -532,11 +612,11 @@ static void PositionTaskbarOverlay() {
 }
 
 static void EnsureTaskbarOverlayTopmost() {
-    if (!g_hwndOverlay || !g_settings.showWidget || !IsWindowVisible(g_hwndOverlay)) return;
-
-    RECT taskbar = {};
-    UINT edge = ABE_BOTTOM;
-    if (!GetTaskbarPosition(&taskbar, &edge) || !IsTaskbarShown(taskbar, edge)) return;
+    if (!g_hwndOverlay || !IsWindowVisible(g_hwndOverlay)) return;
+    if (!ShouldShowTaskbarMeter(nullptr, nullptr)) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
+    }
 
     SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -545,8 +625,28 @@ static void EnsureTaskbarOverlayTopmost() {
 static void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
                                          LONG, LONG, DWORD, DWORD) {
     if (event == EVENT_SYSTEM_FOREGROUND && hwnd && g_hwndMain && hwnd != g_hwndOverlay) {
+        PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
         PostMessageW(g_hwndMain, WM_OVERLAY_ENSURE_TOPMOST, 0, 0);
     }
+}
+
+static void CALLBACK OnLocationChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
+                                       LONG idObject, LONG idChild, DWORD, DWORD) {
+    // Filter to top-level window moves only (not child controls, not caret, etc.)
+    if (event != EVENT_OBJECT_LOCATIONCHANGE) return;
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+    if (!hwnd || !g_hwndMain || hwnd == g_hwndOverlay || hwnd == g_hwndMain) return;
+
+    // Only care about the foreground window's geometry changes
+    HWND fg = GetForegroundWindow();
+    if (!fg) return;
+    HWND root = GetAncestor(fg, GA_ROOT);
+    if (root) fg = root;
+    HWND hwndRoot = GetAncestor(hwnd, GA_ROOT);
+    if (hwndRoot) hwnd = hwndRoot;
+    if (hwnd != fg) return;
+
+    PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
 }
 
 static void CreateOrUpdateOverlay() {
@@ -626,7 +726,6 @@ static void OnTimerTick() {
     }
 
     UpdateTrayIcon();
-
     CreateOrUpdateOverlay();
 }
 
@@ -1211,6 +1310,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_OVERLAY_ENSURE_TOPMOST:
         EnsureTaskbarOverlayTopmost();
         return 0;
+    case WM_CHECK_FULLSCREEN:
+        PositionTaskbarOverlay();
+        return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -1349,6 +1451,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
                                        nullptr, OnForegroundChanged, 0, 0,
                                        WINEVENT_OUTOFCONTEXT);
+    g_locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
+                                     nullptr, OnLocationChanged, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT);
 
     MSG msg = {};
     BOOL result = 0;
@@ -1361,6 +1466,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     if (g_foregroundHook) {
         UnhookWinEvent(g_foregroundHook);
         g_foregroundHook = nullptr;
+    }
+    if (g_locationHook) {
+        UnhookWinEvent(g_locationHook);
+        g_locationHook = nullptr;
     }
 
     // Cleanup resources

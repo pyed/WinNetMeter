@@ -14,6 +14,13 @@ inline int ClampOverlay(int value, int low, int high) {
     return value;
 }
 
+inline bool IsWindowRectFullscreen(const RECT& wnd, const RECT& monitor, int tolerance = 1) {
+    return wnd.left <= monitor.left + tolerance &&
+           wnd.top <= monitor.top + tolerance &&
+           wnd.right >= monitor.right - tolerance &&
+           wnd.bottom >= monitor.bottom - tolerance;
+}
+
 inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi, int logicalOffset = 0) {
     const int barWidth = taskbar.right - taskbar.left;
     const int barHeight = taskbar.bottom - taskbar.top;
