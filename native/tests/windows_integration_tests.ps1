@@ -481,12 +481,27 @@ try {
                 }
                 Assert-True $hidden 'Overlay did not hide for fullscreen window'
 
-                # 7. Restore SAME HWND to normal windowed bounds
+                # 7. Model the Win+D transient: same foreground/fullscreen HWND, now minimized.
+                # WS_POPUP | WS_VISIBLE | WS_MINIMIZE = 0xB0000000
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0xB0000000)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True $overlayWnd.Visible 'Overlay stayed hidden for minimized fullscreen foreground'
+
+                # Clearing WS_MINIMIZE must classify the same HWND as genuine fullscreen again.
+                [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0x90000000)
+                [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
+                $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                Assert-True (-not $overlayWnd.Visible) 'Overlay did not hide after clearing WS_MINIMIZE'
+
+                # 8. Restore SAME HWND to normal windowed bounds
                 [void][WinNetMeterNative]::SetWindowLongPtrW($probe, -16, [IntPtr]0x10CF0000)
                 [void][WinNetMeterNative]::SetWindowPos($probe, [IntPtr](-2), 50, 50, 600, 400, 0x0040)
                 [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
 
-                # 8. Verify overlay restores promptly
+                # 9. Verify overlay restores promptly
                 $restored = $false
                 for ($attempt = 0; $attempt -lt 30; ++$attempt) {
                     $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
@@ -498,11 +513,11 @@ try {
                 }
                 Assert-True $restored 'Overlay did not restore after exiting fullscreen'
 
-                # 9. Verify focus was not stolen by WinNetMeter
+                # 10. Verify focus was not stolen by WinNetMeter
                 $fg = [WinNetMeterNative]::GetForegroundWindow()
                 Assert-True ($fg -eq $probe) 'WinNetMeter stole foreground focus'
 
-                # 10. Verify exactly one overlay exists
+                # 11. Verify exactly one overlay exists
                 $windows = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
                 $overlays = @($windows | Where-Object ClassName -eq 'WinNetMeterOverlay')
                 Assert-True ($overlays.Count -eq 1) 'Duplicate overlay detected'

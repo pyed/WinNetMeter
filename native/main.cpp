@@ -416,30 +416,7 @@ static bool IsTaskbarShown(const RECT& expected, UINT edge) {
 }
 
 // ---- Fullscreen Detection ----------------------------------------------------
-static bool IsWindowsShellProcess(DWORD pid) {
-    if (pid == 0) return false;
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!hProcess) return false;
-
-    wchar_t path[MAX_PATH] = {};
-    DWORD size = _countof(path);
-    bool isShell = false;
-    if (QueryFullProcessImageNameW(hProcess, 0, path, &size)) {
-        const wchar_t* filename = wcsrchr(path, L'\\');
-        filename = filename ? (filename + 1) : path;
-
-        if (_wcsicmp(filename, L"StartMenuExperienceHost.exe") == 0 ||
-            _wcsicmp(filename, L"SearchHost.exe") == 0 ||
-            _wcsicmp(filename, L"ShellExperienceHost.exe") == 0 ||
-            _wcsicmp(filename, L"TextInputHost.exe") == 0) {
-            isShell = true;
-        }
-    }
-    CloseHandle(hProcess);
-    return isShell;
-}
-
-static bool IsWindowsShellSurface(HWND hwnd) {
+static bool IsShellOrDesktopWindow(HWND hwnd) {
     if (!hwnd) return false;
     if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) return true;
 
@@ -448,19 +425,10 @@ static bool IsWindowsShellSurface(HWND hwnd) {
         if (wcscmp(cls, L"Progman") == 0 ||
             wcscmp(cls, L"WorkerW") == 0 ||
             wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-            wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
-            wcscmp(cls, L"XamlExplorerHostIslandWindow") == 0 ||
-            wcscmp(cls, L"TaskSwitcherWnd") == 0) {
+            wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
             return true;
         }
     }
-
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != 0 && IsWindowsShellProcess(pid)) {
-        return true;
-    }
-
     return false;
 }
 
@@ -489,7 +457,7 @@ static bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
 
     // Don't classify our own windows or shell/desktop surfaces as fullscreen
     if (fg == g_hwndOverlay || fg == g_hwndMain) return false;
-    if (IsWindowsShellSurface(fg)) return false;
+    if (IsShellOrDesktopWindow(fg)) return false;
 
     // Check which monitor the foreground window is on
     HMONITOR fgMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
