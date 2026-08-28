@@ -593,72 +593,65 @@ void TestOverlayAlphaComposition() {
 }
 
 // Test 9: Fullscreen geometry detection (deterministic, no live windows)
-// Mirrors the comparison logic in IsForegroundFullscreenOnMonitor
-static bool IsRectFullscreen(const RECT& wnd, const RECT& monitor) {
-    return wnd.left <= monitor.left + 1 &&
-           wnd.top <= monitor.top + 1 &&
-           wnd.right >= monitor.right - 1 &&
-           wnd.bottom >= monitor.bottom - 1;
-}
-
+// Uses the actual production IsWindowRectFullscreen helper from overlay.h
 void TestFullscreenDetection() {
     // Primary monitor 1920x1080
     const RECT mon1 = { 0, 0, 1920, 1080 };
 
     // Exact fullscreen match
     const RECT fullscreen1 = { 0, 0, 1920, 1080 };
-    assert(IsRectFullscreen(fullscreen1, mon1));
+    assert(IsWindowRectFullscreen(fullscreen1, mon1));
 
     // Fullscreen with 1px tolerance (DWM rounding)
     const RECT fullscreenTolerance = { 1, 0, 1920, 1080 };
-    assert(IsRectFullscreen(fullscreenTolerance, mon1));
+    assert(IsWindowRectFullscreen(fullscreenTolerance, mon1));
     const RECT fullscreenTolerance2 = { 0, 0, 1919, 1080 };
-    assert(IsRectFullscreen(fullscreenTolerance2, mon1));
+    assert(IsWindowRectFullscreen(fullscreenTolerance2, mon1));
 
     // Normal maximized window (occupies rcWork, NOT rcMonitor)
     // Taskbar at bottom takes ~48px, so maximized leaves 0,0 -> 1920,1032
     const RECT maximized = { 0, 0, 1920, 1032 };
-    assert(!IsRectFullscreen(maximized, mon1));
+    assert(!IsWindowRectFullscreen(maximized, mon1));
 
     // Maximized with invisible borders (Win10/11 adds ~7px borders)
     const RECT maximizedBorders = { -7, 0, 1927, 1032 };
-    assert(!IsRectFullscreen(maximizedBorders, mon1));
+    assert(!IsWindowRectFullscreen(maximizedBorders, mon1));
 
     // Regular window
     const RECT regularWindow = { 100, 100, 800, 600 };
-    assert(!IsRectFullscreen(regularWindow, mon1));
+    assert(!IsWindowRectFullscreen(regularWindow, mon1));
 
     // Window slightly smaller than monitor (2px gap) — NOT fullscreen
     const RECT nearFullscreen = { 2, 0, 1918, 1080 };
-    assert(!IsRectFullscreen(nearFullscreen, mon1));
+    assert(!IsWindowRectFullscreen(nearFullscreen, mon1));
 
     printf("PASS: TestFullscreenDetection (primary monitor)\n");
 
     // Secondary monitor with negative coordinates (-1920,0 -> 0,1080)
     const RECT mon2 = { -1920, 0, 0, 1080 };
     const RECT fullscreenMon2 = { -1920, 0, 0, 1080 };
-    assert(IsRectFullscreen(fullscreenMon2, mon2));
+    assert(IsWindowRectFullscreen(fullscreenMon2, mon2));
     const RECT maximizedMon2 = { -1920, 0, 0, 1032 };
-    assert(!IsRectFullscreen(maximizedMon2, mon2));
+    assert(!IsWindowRectFullscreen(maximizedMon2, mon2));
 
     printf("PASS: TestFullscreenDetection (negative coordinates)\n");
 
     // Monitor above primary at (0, -1440, 2560, 0)
     const RECT monAbove = { 0, -1440, 2560, 0 };
     const RECT fullscreenAbove = { 0, -1440, 2560, 0 };
-    assert(IsRectFullscreen(fullscreenAbove, monAbove));
+    assert(IsWindowRectFullscreen(fullscreenAbove, monAbove));
     const RECT maximizedAbove = { 0, -1440, 2560, -48 };
-    assert(!IsRectFullscreen(maximizedAbove, monAbove));
+    assert(!IsWindowRectFullscreen(maximizedAbove, monAbove));
 
     printf("PASS: TestFullscreenDetection (monitor above)\n");
 
     // Cross-monitor: fullscreen on monitor 2 should NOT match monitor 1
-    assert(!IsRectFullscreen(fullscreenMon2, mon1));
-    assert(!IsRectFullscreen(fullscreenAbove, mon1));
+    assert(!IsWindowRectFullscreen(fullscreenMon2, mon1));
+    assert(!IsWindowRectFullscreen(fullscreenAbove, mon1));
 
     // Oversized window (covers more than monitor) — still fullscreen
     const RECT oversized = { -10, -10, 1930, 1090 };
-    assert(IsRectFullscreen(oversized, mon1));
+    assert(IsWindowRectFullscreen(oversized, mon1));
 
     printf("PASS: TestFullscreenDetection (cross-monitor and oversized)\n");
 }

@@ -78,7 +78,6 @@ static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
 static HWINEVENTHOOK g_foregroundHook = nullptr;
 static HWINEVENTHOOK g_locationHook = nullptr;
-static bool g_fullscreenSuppressed = false;
 
 // Main window child controls
 static HWND g_hwndIfaceLbl = nullptr;
@@ -133,7 +132,6 @@ static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
 static void PopulateAdapters(bool isInitialStartup = false);
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
-static void UpdateFullscreenState();
 
 static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
@@ -418,6 +416,22 @@ static bool IsTaskbarShown(const RECT& expected, UINT edge) {
 }
 
 // ---- Fullscreen Detection ----------------------------------------------------
+static bool IsShellOrDesktopWindow(HWND hwnd) {
+    if (!hwnd) return false;
+    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) return true;
+
+    wchar_t cls[64] = {};
+    if (GetClassNameW(hwnd, cls, _countof(cls)) > 0) {
+        if (wcscmp(cls, L"Progman") == 0 ||
+            wcscmp(cls, L"WorkerW") == 0 ||
+            wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+            wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
     // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) returns the actual visible
     // bounds, excluding invisible resize borders that GetWindowRect includes on Win10/11.
@@ -427,7 +441,9 @@ static bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
     return GetWindowRect(hwnd, out) != FALSE;
 }
 
-static bool IsForegroundFullscreenOnMonitor(HMONITOR overlayMonitor) {
+static bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
+    if (!targetMonitor) return false;
+
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
 
@@ -435,12 +451,13 @@ static bool IsForegroundFullscreenOnMonitor(HMONITOR overlayMonitor) {
     HWND root = GetAncestor(fg, GA_ROOT);
     if (root) fg = root;
 
-    // Don't classify our own windows as fullscreen
+    // Don't classify our own windows or shell/desktop surfaces as fullscreen
     if (fg == g_hwndOverlay || fg == g_hwndMain) return false;
+    if (IsShellOrDesktopWindow(fg)) return false;
 
     // Check which monitor the foreground window is on
     HMONITOR fgMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
-    if (!fgMonitor || fgMonitor != overlayMonitor) return false;
+    if (!fgMonitor || fgMonitor != targetMonitor) return false;
 
     MONITORINFO mi = { sizeof(mi) };
     if (!GetMonitorInfoW(fgMonitor, &mi)) return false;
@@ -448,30 +465,33 @@ static bool IsForegroundFullscreenOnMonitor(HMONITOR overlayMonitor) {
     RECT wndRect = {};
     if (!GetVisibleWindowBounds(fg, &wndRect)) return false;
 
-    // A fullscreen window covers the full monitor (rcMonitor), not just work area (rcWork).
-    // Allow 1px tolerance for DWM rounding.
-    const RECT& mon = mi.rcMonitor;
-    return wndRect.left <= mon.left + 1 &&
-           wndRect.top <= mon.top + 1 &&
-           wndRect.right >= mon.right - 1 &&
-           wndRect.bottom >= mon.bottom - 1;
+    if (!IsWindowRectFullscreen(wndRect, mi.rcMonitor)) return false;
+
+    // Normal maximized window under taskbar auto-hide:
+    // Has WS_CAPTION and is zoomed (maximized), occupying rcWork.
+    // Genuine fullscreen apps (F11, games, video) remove WS_CAPTION or use WS_POPUP.
+    LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
+    if ((style & WS_CAPTION) == WS_CAPTION && (style & WS_MAXIMIZE) != 0) {
+        return false;
+    }
+
+    return true;
 }
 
-static void UpdateFullscreenState() {
-    if (!g_hwndOverlay) return;
+static bool ShouldShowTaskbarMeter(RECT* outTaskbar = nullptr, UINT* outEdge = nullptr) {
+    if (!g_settings.showWidget) return false;
 
-    HMONITOR overlayMonitor = MonitorFromWindow(g_hwndOverlay, MONITOR_DEFAULTTOPRIMARY);
-    bool shouldSuppress = IsForegroundFullscreenOnMonitor(overlayMonitor);
+    RECT taskbar = {};
+    UINT edge = ABE_BOTTOM;
+    if (!GetTaskbarPosition(&taskbar, &edge)) return false;
+    if (!IsTaskbarShown(taskbar, edge)) return false;
 
-    if (shouldSuppress != g_fullscreenSuppressed) {
-        g_fullscreenSuppressed = shouldSuppress;
-        if (shouldSuppress) {
-            ShowWindow(g_hwndOverlay, SW_HIDE);
-        } else {
-            // Re-show by running normal positioning, which checks all other conditions
-            PositionTaskbarOverlay();
-        }
-    }
+    HMONITOR taskbarMon = MonitorFromRect(&taskbar, MONITOR_DEFAULTTOPRIMARY);
+    if (IsForegroundFullscreenOnMonitor(taskbarMon)) return false;
+
+    if (outTaskbar) *outTaskbar = taskbar;
+    if (outEdge) *outEdge = edge;
+    return true;
 }
 
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -502,23 +522,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 static void PositionTaskbarOverlay() {
     if (!g_hwndOverlay) return;
-    if (!g_settings.showWidget) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
 
     RECT taskbar = {};
     UINT edge = ABE_BOTTOM;
-    if (!GetTaskbarPosition(&taskbar, &edge)) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
-    if (!IsTaskbarShown(taskbar, edge)) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
-    if (g_fullscreenSuppressed) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
+    if (!ShouldShowTaskbarMeter(&taskbar, &edge)) {
+        if (IsWindowVisible(g_hwndOverlay)) {
+            ShowWindow(g_hwndOverlay, SW_HIDE);
+        }
         return;
     }
 
@@ -598,12 +608,11 @@ static void PositionTaskbarOverlay() {
 }
 
 static void EnsureTaskbarOverlayTopmost() {
-    if (!g_hwndOverlay || !g_settings.showWidget || !IsWindowVisible(g_hwndOverlay)) return;
-    if (g_fullscreenSuppressed) return;
-
-    RECT taskbar = {};
-    UINT edge = ABE_BOTTOM;
-    if (!GetTaskbarPosition(&taskbar, &edge) || !IsTaskbarShown(taskbar, edge)) return;
+    if (!g_hwndOverlay || !IsWindowVisible(g_hwndOverlay)) return;
+    if (!ShouldShowTaskbarMeter(nullptr, nullptr)) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
+    }
 
     SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -713,8 +722,6 @@ static void OnTimerTick() {
     }
 
     UpdateTrayIcon();
-
-    UpdateFullscreenState();
     CreateOrUpdateOverlay();
 }
 
@@ -1300,7 +1307,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         EnsureTaskbarOverlayTopmost();
         return 0;
     case WM_CHECK_FULLSCREEN:
-        UpdateFullscreenState();
+        PositionTaskbarOverlay();
         return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
