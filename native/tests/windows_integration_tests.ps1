@@ -286,7 +286,7 @@ if ($Check -eq 'StaticRuntime') {
 }
 
 if ($Check -eq 'Imports') {
-    $allowlist = @('COMCTL32.DLL', 'COMDLG32.DLL', 'GDI32.DLL', 'IPHLPAPI.DLL',
+    $allowlist = @('COMCTL32.DLL', 'COMDLG32.DLL', 'DWMAPI.DLL', 'GDI32.DLL', 'IPHLPAPI.DLL',
                    'KERNEL32.DLL', 'SHELL32.DLL', 'USER32.DLL')
     $importControl = @('UNEXPECTED_TEST.DLL' | Where-Object { $_ -notin $allowlist }).Count -eq 1
     Assert-True $importControl 'Import allowlist negative control did not detect an unexpected DLL'

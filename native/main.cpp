@@ -8,6 +8,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <cwchar>
@@ -21,6 +22,7 @@ enum {
     WM_TRAYICON = WM_APP + 1,
     WM_OVERLAY_REFRESH = WM_APP + 2,
     WM_OVERLAY_ENSURE_TOPMOST = WM_APP + 3,
+    WM_CHECK_FULLSCREEN = WM_APP + 4,
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -75,6 +77,8 @@ static HINSTANCE g_hInst = nullptr;
 static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
 static HWINEVENTHOOK g_foregroundHook = nullptr;
+static HWINEVENTHOOK g_locationHook = nullptr;
+static bool g_fullscreenSuppressed = false;
 
 // Main window child controls
 static HWND g_hwndIfaceLbl = nullptr;
@@ -129,6 +133,7 @@ static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
 static void PopulateAdapters(bool isInitialStartup = false);
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
+static void UpdateFullscreenState();
 
 static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
@@ -412,6 +417,63 @@ static bool IsTaskbarShown(const RECT& expected, UINT edge) {
     return visibleThickness * 2 >= expectedThickness;
 }
 
+// ---- Fullscreen Detection ----------------------------------------------------
+static bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
+    // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) returns the actual visible
+    // bounds, excluding invisible resize borders that GetWindowRect includes on Win10/11.
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out, sizeof(*out)))) {
+        return true;
+    }
+    return GetWindowRect(hwnd, out) != FALSE;
+}
+
+static bool IsForegroundFullscreenOnMonitor(HMONITOR overlayMonitor) {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+
+    // Normalize to root window to avoid classifying child controls/tooltips/menus
+    HWND root = GetAncestor(fg, GA_ROOT);
+    if (root) fg = root;
+
+    // Don't classify our own windows as fullscreen
+    if (fg == g_hwndOverlay || fg == g_hwndMain) return false;
+
+    // Check which monitor the foreground window is on
+    HMONITOR fgMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
+    if (!fgMonitor || fgMonitor != overlayMonitor) return false;
+
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(fgMonitor, &mi)) return false;
+
+    RECT wndRect = {};
+    if (!GetVisibleWindowBounds(fg, &wndRect)) return false;
+
+    // A fullscreen window covers the full monitor (rcMonitor), not just work area (rcWork).
+    // Allow 1px tolerance for DWM rounding.
+    const RECT& mon = mi.rcMonitor;
+    return wndRect.left <= mon.left + 1 &&
+           wndRect.top <= mon.top + 1 &&
+           wndRect.right >= mon.right - 1 &&
+           wndRect.bottom >= mon.bottom - 1;
+}
+
+static void UpdateFullscreenState() {
+    if (!g_hwndOverlay) return;
+
+    HMONITOR overlayMonitor = MonitorFromWindow(g_hwndOverlay, MONITOR_DEFAULTTOPRIMARY);
+    bool shouldSuppress = IsForegroundFullscreenOnMonitor(overlayMonitor);
+
+    if (shouldSuppress != g_fullscreenSuppressed) {
+        g_fullscreenSuppressed = shouldSuppress;
+        if (shouldSuppress) {
+            ShowWindow(g_hwndOverlay, SW_HIDE);
+        } else {
+            // Re-show by running normal positioning, which checks all other conditions
+            PositionTaskbarOverlay();
+        }
+    }
+}
+
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: {
@@ -452,6 +514,10 @@ static void PositionTaskbarOverlay() {
         return;
     }
     if (!IsTaskbarShown(taskbar, edge)) {
+        ShowWindow(g_hwndOverlay, SW_HIDE);
+        return;
+    }
+    if (g_fullscreenSuppressed) {
         ShowWindow(g_hwndOverlay, SW_HIDE);
         return;
     }
@@ -533,6 +599,7 @@ static void PositionTaskbarOverlay() {
 
 static void EnsureTaskbarOverlayTopmost() {
     if (!g_hwndOverlay || !g_settings.showWidget || !IsWindowVisible(g_hwndOverlay)) return;
+    if (g_fullscreenSuppressed) return;
 
     RECT taskbar = {};
     UINT edge = ABE_BOTTOM;
@@ -545,8 +612,28 @@ static void EnsureTaskbarOverlayTopmost() {
 static void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
                                          LONG, LONG, DWORD, DWORD) {
     if (event == EVENT_SYSTEM_FOREGROUND && hwnd && g_hwndMain && hwnd != g_hwndOverlay) {
+        PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
         PostMessageW(g_hwndMain, WM_OVERLAY_ENSURE_TOPMOST, 0, 0);
     }
+}
+
+static void CALLBACK OnLocationChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
+                                       LONG idObject, LONG idChild, DWORD, DWORD) {
+    // Filter to top-level window moves only (not child controls, not caret, etc.)
+    if (event != EVENT_OBJECT_LOCATIONCHANGE) return;
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+    if (!hwnd || !g_hwndMain || hwnd == g_hwndOverlay || hwnd == g_hwndMain) return;
+
+    // Only care about the foreground window's geometry changes
+    HWND fg = GetForegroundWindow();
+    if (!fg) return;
+    HWND root = GetAncestor(fg, GA_ROOT);
+    if (root) fg = root;
+    HWND hwndRoot = GetAncestor(hwnd, GA_ROOT);
+    if (hwndRoot) hwnd = hwndRoot;
+    if (hwnd != fg) return;
+
+    PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
 }
 
 static void CreateOrUpdateOverlay() {
@@ -627,6 +714,7 @@ static void OnTimerTick() {
 
     UpdateTrayIcon();
 
+    UpdateFullscreenState();
     CreateOrUpdateOverlay();
 }
 
@@ -1211,6 +1299,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_OVERLAY_ENSURE_TOPMOST:
         EnsureTaskbarOverlayTopmost();
         return 0;
+    case WM_CHECK_FULLSCREEN:
+        UpdateFullscreenState();
+        return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -1349,6 +1440,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
                                        nullptr, OnForegroundChanged, 0, 0,
                                        WINEVENT_OUTOFCONTEXT);
+    g_locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
+                                     nullptr, OnLocationChanged, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT);
 
     MSG msg = {};
     BOOL result = 0;
@@ -1361,6 +1455,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     if (g_foregroundHook) {
         UnhookWinEvent(g_foregroundHook);
         g_foregroundHook = nullptr;
+    }
+    if (g_locationHook) {
+        UnhookWinEvent(g_locationHook);
+        g_locationHook = nullptr;
     }
 
     // Cleanup resources
