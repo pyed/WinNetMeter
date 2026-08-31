@@ -8,9 +8,10 @@ WinNetMeter is a lightweight Windows 10 and 11 x64 utility that shows real-time 
 
 ## Features
 
-- Live upload/download speed and session totals for a selected Ethernet, Wi-Fi, VPN, or virtual interface.
-- Compact dynamic tray icon, optional status window, and non-activating per-pixel-alpha taskbar meter.
-- Configurable upload/download colors and overlay font.
+- Live upload/download speed, session totals, and resettable persisted totals for a selected Ethernet, Wi-Fi, VPN, or virtual interface.
+- Compact optional tray icon, unified status/settings window, and non-activating per-pixel-alpha taskbar meter.
+- Optional start with Windows registration for the current user.
+- Configurable upload/download prefixes, colors, and overlay font, updated live on the taskbar meter.
 - Auto, KB/s, MB/s, or GB/s minimum display unit, with 0, 1, or 2 decimal places.
 - Signed taskbar offset for adjusting meter placement without dragging the overlay.
 - Taskbar auto-hide integration and automatic suppression for genuine fullscreen applications.
@@ -29,15 +30,21 @@ Release binaries are currently unsigned, so Windows SmartScreen may show a warni
 
 ## Usage and settings
 
-WinNetMeter starts in the notification area. Double-click the tray icon or taskbar meter to open the status window, where you can choose the network interface and view current speed and session totals. Right-click the tray icon to open Settings, show or hide the taskbar meter, show the status window, or exit.
+WinNetMeter starts in the notification area. Double-click the tray icon or taskbar meter to open its single status and settings window. Right-click the tray icon for quick access to the window, taskbar-meter visibility, and Exit.
 
 Settings provide:
 
 - Upload and download colors.
+- Upload and download prefixes, including empty prefixes; meter appearance and offset changes update live on the taskbar.
 - Overlay font and style.
 - Minimum speed unit: Auto, KB/s, MB/s, or GB/s.
 - Decimal precision: 0, 1, or 2 places.
 - A taskbar offset from `-4096` to `4096` logical pixels, clamped to the visible taskbar.
+- **Reset meter** restores the default prefixes, colors, font, speed format, and offset without clearing traffic totals.
+- Whether to show the taskbar meter and notification-area icon. At least one remains enabled so the window is always reachable.
+- Whether to start with Windows for the current user. This uses the standard `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry and requires no administrator rights.
+
+The status panel separates totals for the current session from saved totals accumulated since the displayed date. **Reset total** clears the saved counters and stamps them with the current date.
 
 Settings are stored in:
 
@@ -62,24 +69,24 @@ Requirements:
 From the repository root:
 
 ```cmd
-cd native
+cd src
 build.bat
 ```
 
 The build script locates an installed MSVC toolchain when needed and compiles with C++20, `/W4`, `/WX`, `/permissive-`, `/MT`, and `/O2`. The output is:
 
 ```text
-native\out\WinNetMeter.exe
+src\out\WinNetMeter.exe
 ```
 
 Run the native unit suite with:
 
 ```cmd
-cd native\tests
+cd src\tests
 run_tests.bat
 ```
 
-Built-executable integration checks are available through `native\tests\windows_integration_tests.ps1`. CI builds the x64 executable, runs the native suite, and verifies PE metadata, static-runtime linkage, and imports.
+Built-executable integration checks are available through `src\tests\windows_integration_tests.ps1`. CI builds the x64 executable, runs the native suite, and verifies PE metadata, static-runtime linkage, and imports.
 
 ## Technical notes and privacy
 

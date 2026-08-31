@@ -1,5 +1,5 @@
 # Build output and binaries
-native/out/
+src/out/
 dist/
 *.exe
 *.obj
@@ -13,8 +13,8 @@ dist/
 *.cache
 
 # Test artifacts
-native/tests/unit_tests.exe
-native/tests/test_settings.ini
+src/tests/unit_tests.exe
+src/tests/test_settings.ini
 
 # Visual Studio & VS Code
 .vs/

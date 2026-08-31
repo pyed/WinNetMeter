@@ -109,6 +109,55 @@ void TestUnchangedIndependentFormatting() {
     printf("PASS: TestUnchangedIndependentFormatting\n");
 }
 
+void TestPrefixesAndLifetimeTotals() {
+    wchar_t text[128] = {};
+    FormatPrefixedSpeed(L"\u2193", L"1.50 MB/s", text, _countof(text));
+    assert(wcscmp(text, L"\u2193  1.50 MB/s") == 0);
+    FormatPrefixedSpeed(L"Down:", L"1.50 MB/s", text, _countof(text));
+    assert(wcscmp(text, L"Down:  1.50 MB/s") == 0);
+    FormatPrefixedSpeed(L"", L"1.50 MB/s", text, _countof(text));
+    assert(wcscmp(text, L"1.50 MB/s") == 0);
+
+    const wchar_t* path = L".\\test_prefix_totals.ini";
+    DeleteFileW(path);
+    AppSettings saved;
+    wcscpy_s(saved.downPrefix, _countof(saved.downPrefix), L"");
+    wcscpy_s(saved.upPrefix, _countof(saved.upPrefix), L"\u2191 Up:");
+    saved.lifetimeDownloaded = 18446744073709551600ULL;
+    saved.lifetimeUploaded = 1234567890123456789ULL;
+    wcscpy_s(saved.lifetimeSince, _countof(saved.lifetimeSince), L"2024-02-29");
+    SaveSettingsCustom(&saved, path);
+
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(wcscmp(loaded.downPrefix, L"") == 0);
+    assert(wcscmp(loaded.upPrefix, L"\u2191 Up:") == 0);
+    assert(loaded.lifetimeDownloaded == saved.lifetimeDownloaded);
+    assert(loaded.lifetimeUploaded == saved.lifetimeUploaded);
+    assert(wcscmp(loaded.lifetimeSince, L"2024-02-29") == 0);
+    assert(FormatLifetimeSinceDate(loaded.lifetimeSince, text, _countof(text)));
+    assert(wcscmp(text, L"29/02/2024") == 0);
+    assert(!FormatLifetimeSinceDate(L"2023-02-29", text, _countof(text)));
+
+    AddLifetimeTraffic(&loaded, 100, ULLONG_MAX);
+    assert(loaded.lifetimeDownloaded == ULLONG_MAX);
+    assert(loaded.lifetimeUploaded == ULLONG_MAX);
+    ResetLifetimeTotals(&loaded);
+    assert(loaded.lifetimeDownloaded == 0 && loaded.lifetimeUploaded == 0);
+    assert(FormatLifetimeSinceDate(loaded.lifetimeSince, text, _countof(text)));
+
+    WritePrivateProfileStringW(L"Overlay", L"DownloadPrefix", L"xZZZZ", path);
+    WritePrivateProfileStringW(L"Totals", L"Uploaded", L"-1", path);
+    WritePrivateProfileStringW(L"Totals", L"Since", L"not-a-date", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(wcscmp(loaded.downPrefix, L"\u2193") == 0);
+    assert(loaded.lifetimeUploaded == 0);
+    assert(wcscmp(loaded.lifetimeSince, L"not-a-date") != 0);
+    assert(FormatLifetimeSinceDate(loaded.lifetimeSince, text, _countof(text)));
+    DeleteFileW(path);
+    printf("PASS: TestPrefixesAndLifetimeTotals\n");
+}
+
 // Test 2: NetSampler with mock updates (64-bit counters, monotonic timing, counter reset, wrap)
 void TestNetSamplerMock() {
     NetSampler s;
@@ -177,6 +226,7 @@ void TestSettings() {
     s1.fontSize = 11.5;
     s1.fontStyle = 15; // Bold(1) | Italic(2) | Underline(4) | Strikeout(8)
     s1.showWidget = 0;
+    s1.showTrayIcon = 0;
     s1.minimumSpeedUnit = MinimumSpeedUnit::Megabytes;
     s1.decimalPlaces = 0;
 
@@ -192,6 +242,7 @@ void TestSettings() {
     assert(fabs(s2.fontSize - s1.fontSize) < 0.01);
     assert(s2.fontStyle == s1.fontStyle);
     assert(s2.showWidget == s1.showWidget);
+    assert(s2.showTrayIcon == s1.showTrayIcon);
     assert(s2.minimumSpeedUnit == s1.minimumSpeedUnit);
     assert(s2.decimalPlaces == s1.decimalPlaces);
 
@@ -201,6 +252,13 @@ void TestSettings() {
     wchar_t defaultPath[MAX_PATH] = {};
     GetSettingsPath(defaultPath, _countof(defaultPath));
     assert(wcsstr(defaultPath, L"\\WinNetMeter\\settings.ini") != nullptr);
+
+    AppSettings reachable;
+    assert(HasUiEntryPoint(reachable));
+    reachable.showTrayIcon = 0;
+    assert(HasUiEntryPoint(reachable));
+    reachable.showWidget = 0;
+    assert(!HasUiEntryPoint(reachable));
 
     printf("PASS: TestSettings\n");
 }
@@ -660,6 +718,7 @@ int main() {
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestSpeedFormatting();
     TestUnchangedIndependentFormatting();
+    TestPrefixesAndLifetimeTotals();
     TestNetSamplerMock();
     TestSettings();
     TestSpeedFormattingSettings();

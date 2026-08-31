@@ -21,34 +21,34 @@ jobs:
 
       - name: Build WinNetMeter (Release x64)
         shell: cmd
-        working-directory: native
+        working-directory: src
         run: build.bat
 
       - name: Run Native Test Suite
         shell: cmd
-        working-directory: native/tests
+        working-directory: src/tests
         run: run_tests.bat
 
       - name: Verify PE Metadata and Dependencies
         shell: pwsh
         run: |
-          ./native/tests/windows_integration_tests.ps1 -Check Metadata
-          ./native/tests/windows_integration_tests.ps1 -Check StaticRuntime
-          ./native/tests/windows_integration_tests.ps1 -Check Imports
+          ./src/tests/windows_integration_tests.ps1 -Check Metadata
+          ./src/tests/windows_integration_tests.ps1 -Check StaticRuntime
+          ./src/tests/windows_integration_tests.ps1 -Check Imports
 
       - name: Verify Executable
         shell: pwsh
         run: |
-          if (-not (Test-Path native/out/WinNetMeter.exe)) {
-            Write-Error "Build artifact native/out/WinNetMeter.exe was not produced."
+          if (-not (Test-Path src/out/WinNetMeter.exe)) {
+            Write-Error "Build artifact src/out/WinNetMeter.exe was not produced."
             exit 1
           }
-          $item = Get-Item native/out/WinNetMeter.exe
+          $item = Get-Item src/out/WinNetMeter.exe
           Write-Host "Built successfully: $($item.FullName) ($($item.Length) bytes)"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: WinNetMeter-windows-x64
-          path: native/out/WinNetMeter.exe
+          path: src/out/WinNetMeter.exe
           if-no-files-found: error

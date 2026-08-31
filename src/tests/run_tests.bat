@@ -1,6 +1,12 @@
 @echo off
 setlocal
-rem Build: WinNetMeter.exe (static CRT, Release)
+
+if "%~1"=="--no-build" (
+    if exist unit_tests.exe (
+        unit_tests.exe
+        exit /b %ERRORLEVEL%
+    )
+)
 
 where cl >nul 2>&1
 if %ERRORLEVEL% equ 0 goto compile
@@ -34,7 +40,5 @@ if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliar
 :compile
 where cl >nul 2>&1 || (echo ERROR: MSVC x64 compiler not found & exit /b 1)
 
-if not exist out mkdir out
-rc /nologo /fo out\app.res app.rc || exit /b 1
-cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /Fo"out\\" /Fe"out\WinNetMeter.exe" main.cpp network.cpp settings.cpp out\app.res /link iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib dwmapi.lib /SUBSYSTEM:WINDOWS
-exit /b %ERRORLEVEL%
+cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /utf-8 /DUNICODE /D_UNICODE unit_tests.cpp ..\network.cpp ..\settings.cpp /link advapi32.lib iphlpapi.lib shell32.lib user32.lib gdi32.lib /out:unit_tests.exe || exit /b 1
+unit_tests.exe || exit /b 1

@@ -29,6 +29,7 @@ void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
                  int decimalPlaces, wchar_t* out, size_t maxLen);
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen);
 void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
+void FormatPrefixedSpeed(const wchar_t* prefix, const wchar_t* speed, wchar_t* out, size_t maxLen);
 
 // Live counter sampler keyed by stable NET_LUID.
 struct NetSampler {

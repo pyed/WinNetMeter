@@ -1,10 +1,11 @@
 #include <windows.h>
+#include "version.h"
 
 1 ICON "icon.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,1,0,0
-PRODUCTVERSION 0,1,0,0
+FILEVERSION WINNETMETER_VERSION
+PRODUCTVERSION WINNETMETER_VERSION
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -16,12 +17,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "WinNetMeter"
-            VALUE "FileVersion", "0.1.0"
+            VALUE "FileVersion", WINNETMETER_VERSION_STRING
             VALUE "InternalName", "WinNetMeter"
             VALUE "LegalCopyright", "Copyright (c) 2025-2026"
             VALUE "OriginalFilename", "WinNetMeter.exe"
             VALUE "ProductName", "WinNetMeter"
-            VALUE "ProductVersion", "0.1.0"
+            VALUE "ProductVersion", WINNETMETER_VERSION_STRING
         END
     END
     BLOCK "VarFileInfo"

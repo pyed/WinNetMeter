@@ -15,6 +15,7 @@
 #include "network.h"
 #include "overlay.h"
 #include "settings.h"
+#include "version.h"
 
 // Window message constants & IDs
 enum {
@@ -31,6 +32,14 @@ enum {
     ID_TOTAL_DOWN = 104,
     ID_TOTAL_UP = 105,
     ID_AUTHOR_LINK = 106,
+    ID_STATUS_GROUP = 107,
+    ID_SETTINGS_GROUP = 108,
+    ID_LIFETIME_TITLE = 109,
+    ID_LIFETIME_DOWN = 110,
+    ID_LIFETIME_DOWN_VALUE = 111,
+    ID_LIFETIME_UP = 112,
+    ID_LIFETIME_UP_VALUE = 113,
+    ID_LIFETIME_RESET = 114,
     ID_IFACE_LABEL = 201,
     ID_DOWN_TITLE = 202,
     ID_UP_TITLE = 203,
@@ -39,7 +48,6 @@ enum {
 
     // Tray menu command IDs
     ID_TRAY_SHOW = 1001,
-    ID_TRAY_SETTINGS = 1002,
     ID_TRAY_TOGGLE_WIDGET = 1003,
     ID_TRAY_EXIT = 1004,
 
@@ -48,8 +56,6 @@ enum {
     ID_SET_UP_BTN = 2003,
     ID_SET_FONT_BTN = 2004,
     ID_SET_SAVE_BTN = 2005,
-    ID_SET_CANCEL_BTN = 2006,
-    ID_SET_PREVIEW = 2007,
     ID_SET_DOWN_LBL = 2009,
     ID_SET_UP_LBL = 2010,
     ID_SET_FONT_LBL = 2011,
@@ -62,18 +68,24 @@ enum {
     ID_SET_UNIT_COMBO = 2018,
     ID_SET_DECIMALS_LBL = 2019,
     ID_SET_DECIMALS_COMBO = 2020,
+    ID_SET_WIDGET_CHECK = 2021,
+    ID_SET_TRAY_CHECK = 2022,
+    ID_SET_STARTUP_CHECK = 2023,
+    ID_EXIT_APP = 2024,
+    ID_SET_DOWN_PREFIX_LBL = 2025,
+    ID_SET_DOWN_PREFIX_EDIT = 2026,
+    ID_SET_UP_PREFIX_LBL = 2027,
+    ID_SET_UP_PREFIX_EDIT = 2028,
 };
 
-// Colors
-static const COLORREF CLR_BG = RGB(20, 20, 20);
-static const COLORREF CLR_LABEL = RGB(211, 211, 211); // LightGray
-static const COLORREF CLR_WHITE = RGB(255, 255, 255);
-static const COLORREF CLR_GRAY = RGB(128, 128, 128);
 static const wchar_t MAIN_WINDOW_CLASS[] = L"WinNetMeterMain";
+static const wchar_t TEST_WINDOW_CLASS[] = L"WinNetMeterMainTest";
 static const wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.SingleInstance";
+static const wchar_t TEST_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.IntegrationTest.SingleInstance";
 
 // Global application state
 static HINSTANCE g_hInst = nullptr;
+static const wchar_t* g_mainWindowClass = MAIN_WINDOW_CLASS;
 static HWND g_hwndMain = nullptr;
 static HWND g_hwndOverlay = nullptr;
 static HWINEVENTHOOK g_foregroundHook = nullptr;
@@ -90,7 +102,34 @@ static HWND g_hwndTotdTitle = nullptr;
 static HWND g_hwndTotalDown = nullptr;
 static HWND g_hwndTotuTitle = nullptr;
 static HWND g_hwndTotalUp = nullptr;
+static HWND g_hwndLifetimeTitle = nullptr;
+static HWND g_hwndLifetimeDown = nullptr;
+static HWND g_hwndLifetimeDownValue = nullptr;
+static HWND g_hwndLifetimeUp = nullptr;
+static HWND g_hwndLifetimeUpValue = nullptr;
+static HWND g_hwndLifetimeReset = nullptr;
 static HWND g_hwndAuthor = nullptr;
+static HWND g_hwndStatusGroup = nullptr;
+
+struct SettingsUiState {
+    AppSettings tempSettings;
+    HWND hwndGroup = nullptr;
+    HWND hwndLblDownPrefix = nullptr, hwndEditDownPrefix = nullptr;
+    HWND hwndLblUpPrefix = nullptr, hwndEditUpPrefix = nullptr;
+    HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
+    HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
+    HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
+    HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
+    HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
+    HWND hwndLblUnit = nullptr, hwndComboUnit = nullptr;
+    HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
+    HWND hwndCheckWidget = nullptr, hwndCheckTray = nullptr, hwndCheckStartup = nullptr;
+    HWND hwndBtnApply = nullptr, hwndBtnExit = nullptr;
+    int dpi = 96;
+    bool refreshing = false;
+};
+
+static SettingsUiState g_settingsUi;
 
 // Fonts & Brushes
 static HFONT g_fontLabel = nullptr;
@@ -99,7 +138,6 @@ static HFONT g_fontCombo = nullptr;
 static HFONT g_fontAuthor = nullptr;
 static HFONT g_fontOverlay = nullptr;
 
-static HBRUSH g_brushBg = nullptr;
 static HICON g_hCurrentTrayIcon = nullptr;
 
 static UINT g_uTaskbarCreatedMsg = 0;
@@ -119,10 +157,11 @@ static wchar_t g_szDownCompact[32] = L"0B";
 static wchar_t g_szUpCompact[32] = L"0B";
 static ULONGLONG g_currentDownBps = 0;
 static ULONGLONG g_currentUpBps = 0;
+static ULONGLONG g_lastTotalsSaveTick = 0;
+static bool g_totalsDirty = false;
 
 // Forward declarations
 static void ShowMainWindow();
-static void OpenSettingsDialog();
 static void CreateOrUpdateOverlay();
 static void PositionTaskbarOverlay();
 static void EnsureTaskbarOverlayTopmost();
@@ -132,6 +171,8 @@ static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
 static void PopulateAdapters(bool isInitialStartup = false);
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
+static void RefreshSettingsControls();
+static void UpdateTotalValues();
 
 static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
@@ -167,21 +208,54 @@ static HFONT GetOverlayFont(int dpi) {
 }
 
 static void RelayoutMainControls(int dpi) {
+    g_settingsUi.dpi = dpi;
     struct ItemPos {
         HWND hwnd;
         int x, y, w, h;
     } items[] = {
-        { g_hwndIfaceLbl,   20,  20, 120,  20 },
-        { g_combo,         150,  18, 260, 250 },
-        { g_hwndDownTitle,  20,  70, 150,  25 },
-        { g_hwndSpeedDown, 180,  70, 230,  25 },
-        { g_hwndUpTitle,    20, 105, 150,  25 },
-        { g_hwndSpeedUp,   180, 105, 230,  25 },
-        { g_hwndTotdTitle,  20, 165, 150,  25 },
-        { g_hwndTotalDown, 180, 165, 230,  25 },
-        { g_hwndTotuTitle,  20, 195, 150,  25 },
-        { g_hwndTotalUp,   180, 195, 230,  25 },
-        { g_hwndAuthor,     20, 228, 390,  32 },
+        { g_hwndStatusGroup,               12,  12, 325, 375 },
+        { g_hwndIfaceLbl,                   28,  42, 110,  20 },
+        { g_combo,                         140,  39, 180, 250 },
+        { g_hwndDownTitle,                  28,  90, 140,  25 },
+        { g_hwndSpeedDown,                 175,  90, 145,  25 },
+        { g_hwndUpTitle,                    28, 125, 140,  25 },
+        { g_hwndSpeedUp,                   175, 125, 145,  25 },
+        { g_hwndTotdTitle,                  28, 175, 145,  25 },
+        { g_hwndTotalDown,                 180, 175, 140,  25 },
+        { g_hwndTotuTitle,                  28, 205, 145,  25 },
+        { g_hwndTotalUp,                   180, 205, 140,  25 },
+        { g_hwndLifetimeTitle,              28, 250, 292,  25 },
+        { g_hwndLifetimeDown,               28, 280, 145,  25 },
+        { g_hwndLifetimeDownValue,         180, 280, 140,  25 },
+        { g_hwndLifetimeUp,                 28, 310, 145,  25 },
+        { g_hwndLifetimeUpValue,           180, 310, 140,  25 },
+        { g_hwndLifetimeReset,             235, 342,  85,  26 },
+        { g_hwndAuthor,                     28, 405, 300,  38 },
+        { g_settingsUi.hwndGroup,          350,  12, 365, 375 },
+        { g_settingsUi.hwndLblUpPrefix,    370,  42, 125,  25 },
+        { g_settingsUi.hwndEditUpPrefix,   500,  38, 125,  25 },
+        { g_settingsUi.hwndLblDownPrefix,  370,  77, 125,  25 },
+        { g_settingsUi.hwndEditDownPrefix, 500,  73, 125,  25 },
+        { g_settingsUi.hwndLblUp,          370, 112, 125,  25 },
+        { g_settingsUi.hwndBtnUp,          500, 108,  80,  25 },
+        { g_settingsUi.hwndLblDown,        370, 147, 125,  25 },
+        { g_settingsUi.hwndBtnDown,        500, 143,  80,  25 },
+        { g_settingsUi.hwndLblFont,        370, 182, 125,  25 },
+        { g_settingsUi.hwndBtnFont,        500, 178,  80,  25 },
+        { g_settingsUi.hwndLblOffset,      370, 222, 125,  25 },
+        { g_settingsUi.hwndEditOffset,     500, 218,  58,  25 },
+        { g_settingsUi.hwndSpinOffset,     558, 218,  18,  25 },
+        { g_settingsUi.hwndLblOffsetUnit,  580, 222,  25,  25 },
+        { g_settingsUi.hwndBtnOffsetReset, 610, 218,  90,  25 },
+        { g_settingsUi.hwndLblUnit,        370, 257, 125,  25 },
+        { g_settingsUi.hwndComboUnit,      500, 253, 110, 120 },
+        { g_settingsUi.hwndLblDecimals,    370, 292, 125,  25 },
+        { g_settingsUi.hwndComboDecimals, 500, 288,  80, 120 },
+        { g_settingsUi.hwndCheckWidget,    370, 327, 155,  22 },
+        { g_settingsUi.hwndCheckTray,      535, 327, 170,  22 },
+        { g_settingsUi.hwndCheckStartup,   370, 357, 170,  22 },
+        { g_settingsUi.hwndBtnApply,       540, 405,  75,  28 },
+        { g_settingsUi.hwndBtnExit,        625, 405,  75,  28 },
     };
 
     for (const auto& item : items) {
@@ -219,7 +293,32 @@ static void RefreshFontsAndRelayout(int dpi) {
     if (g_hwndTotalDown)  SendMessageW(g_hwndTotalDown, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_hwndTotuTitle)  SendMessageW(g_hwndTotuTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_hwndTotalUp)    SendMessageW(g_hwndTotalUp, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndLifetimeTitle) SendMessageW(g_hwndLifetimeTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
+    if (g_hwndLifetimeDown) SendMessageW(g_hwndLifetimeDown, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndLifetimeDownValue) SendMessageW(g_hwndLifetimeDownValue, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndLifetimeUp) SendMessageW(g_hwndLifetimeUp, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndLifetimeUpValue) SendMessageW(g_hwndLifetimeUpValue, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    if (g_hwndLifetimeReset) SendMessageW(g_hwndLifetimeReset, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_hwndAuthor)     SendMessageW(g_hwndAuthor, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontAuthor), TRUE);
+
+    HWND settingsControls[] = {
+        g_hwndStatusGroup, g_settingsUi.hwndGroup,
+        g_settingsUi.hwndLblDownPrefix, g_settingsUi.hwndEditDownPrefix,
+        g_settingsUi.hwndLblUpPrefix, g_settingsUi.hwndEditUpPrefix,
+        g_settingsUi.hwndLblDown, g_settingsUi.hwndBtnDown,
+        g_settingsUi.hwndLblUp, g_settingsUi.hwndBtnUp,
+        g_settingsUi.hwndLblFont, g_settingsUi.hwndBtnFont,
+        g_settingsUi.hwndLblOffset, g_settingsUi.hwndEditOffset,
+        g_settingsUi.hwndSpinOffset, g_settingsUi.hwndLblOffsetUnit,
+        g_settingsUi.hwndBtnOffsetReset, g_settingsUi.hwndLblUnit,
+        g_settingsUi.hwndComboUnit, g_settingsUi.hwndLblDecimals,
+        g_settingsUi.hwndComboDecimals, g_settingsUi.hwndCheckWidget,
+        g_settingsUi.hwndCheckTray, g_settingsUi.hwndCheckStartup,
+        g_settingsUi.hwndBtnApply, g_settingsUi.hwndBtnExit,
+    };
+    for (HWND control : settingsControls) {
+        if (control) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
+    }
 
     RelayoutMainControls(dpi);
 
@@ -229,8 +328,6 @@ static void RefreshFontsAndRelayout(int dpi) {
     if (oldFontAuthor)  DeleteObject(oldFontAuthor);
     if (oldFontOverlay) DeleteObject(oldFontOverlay);
 
-    if (g_brushBg) DeleteObject(g_brushBg);
-    g_brushBg = CreateSolidBrush(CLR_BG);
 }
 
 static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
@@ -314,7 +411,17 @@ static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpee
     return hIcon;
 }
 
+static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {
+    wchar_t down[96] = {};
+    wchar_t up[96] = {};
+    FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, down, _countof(down));
+    FormatPrefixedSpeed(g_settings.upPrefix, g_szUpSpeed, up, _countof(up));
+    _snwprintf_s(out, maxLen, _TRUNCATE, L"WinNetMeter\n%s\n%s", down, up);
+}
+
 static void UpdateTrayIcon() {
+    if (!g_settings.showTrayIcon) return;
+
     HICON hNewIcon = CreateSpeedTrayIcon(g_szDownCompact, g_szUpCompact);
 
     NOTIFYICONDATAW nid = {};
@@ -324,7 +431,7 @@ static void UpdateTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hNewIcon;
-    swprintf_s(nid.szTip, _countof(nid.szTip), L"WinNetMeter\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
+    BuildTrayTooltip(nid.szTip, _countof(nid.szTip));
 
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 
@@ -335,6 +442,11 @@ static void UpdateTrayIcon() {
 }
 
 static void SetupTrayIcon() {
+    if (!g_settings.showTrayIcon) {
+        RemoveTrayIcon();
+        return;
+    }
+
     NOTIFYICONDATAW old = {};
     old.cbSize = sizeof(old);
     old.hWnd = g_hwndMain;
@@ -355,7 +467,7 @@ static void SetupTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = g_hCurrentTrayIcon;
-    swprintf_s(nid.szTip, _countof(nid.szTip), L"WinNetMeter\n\u2193 %s\n\u2191 %s", g_szDownSpeed, g_szUpSpeed);
+    BuildTrayTooltip(nid.szTip, _countof(nid.szTip));
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
@@ -581,8 +693,8 @@ static void PositionTaskbarOverlay() {
     if (padding * 2 >= width) padding = 0;
     wchar_t upText[128] = {};
     wchar_t downText[128] = {};
-    swprintf_s(upText, L"\u2191  %s", g_szUpSpeed);
-    swprintf_s(downText, L"\u2193  %s", g_szDownSpeed);
+    FormatPrefixedSpeed(g_settings.upPrefix, g_szUpSpeed, upText, _countof(upText));
+    FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, downText, _countof(downText));
     RECT upRect = { padding, 0, width - padding, middle };
     RECT downRect = { padding, middle, width - padding, height };
     const UINT textFlags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
@@ -705,15 +817,23 @@ static void OnTimerTick() {
     }
 
     ULONGLONG downBps = 0, upBps = 0;
+    ULONGLONG previousDown = g_sampler.totalIn;
+    ULONGLONG previousUp = g_sampler.totalOut;
     if (g_sampler.Sample(g_selectedLuid, &downBps, &upBps)) {
         UpdateSpeedValues(downBps, upBps);
+        ULONGLONG downloaded = g_sampler.totalIn - previousDown;
+        ULONGLONG uploaded = g_sampler.totalOut - previousUp;
+        AddLifetimeTraffic(&g_settings, downloaded, uploaded);
+        UpdateTotalValues();
 
-        wchar_t totalBuf[64];
-        FormatBytes(g_sampler.totalIn, totalBuf, _countof(totalBuf));
-        if (g_hwndTotalDown) SetWindowTextW(g_hwndTotalDown, totalBuf);
-
-        FormatBytes(g_sampler.totalOut, totalBuf, _countof(totalBuf));
-        if (g_hwndTotalUp) SetWindowTextW(g_hwndTotalUp, totalBuf);
+        ULONGLONG now = GetTickCount64();
+        if (downloaded || uploaded) g_totalsDirty = true;
+        if (g_totalsDirty && now - g_lastTotalsSaveTick >= 60000) {
+            // ponytail: abnormal termination can lose at most 60 seconds; add a journal only if exact crash durability matters.
+            SaveSettings(&g_settings);
+            g_lastTotalsSaveTick = now;
+            g_totalsDirty = false;
+        }
     } else {
         // Sampling failed (adapter disconnected/disabled): rate-limited refresh at most every 3s
         ULONGLONG now = GetTickCount64();
@@ -738,8 +858,7 @@ static void OnComboSelectionChanged() {
             g_selectedLuid = luid;
             g_sampler.Reset(luid);
             UpdateSpeedValues(0, 0);
-            SetWindowTextW(g_hwndTotalDown, L"0 B");
-            SetWindowTextW(g_hwndTotalUp, L"0 B");
+            UpdateTotalValues();
             UpdateTrayIcon();
             CreateOrUpdateOverlay();
         }
@@ -807,28 +926,31 @@ static void PopulateAdapters(bool isInitialStartup) {
 
 static void ShowMainWindow() {
     if (g_hwndMain) {
+        if (!IsWindowVisible(g_hwndMain)) RefreshSettingsControls();
         ShowWindow(g_hwndMain, IsIconic(g_hwndMain) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(g_hwndMain);
     }
 }
 
-// ---- Settings Dialog ---------------------------------------------------------
-struct SettingsDialogState {
-    AppSettings tempSettings;
-    HWND hwndDlg = nullptr;
-    HWND hwndPreview = nullptr;
-    HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
-    HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
-    HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
-    HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
-    HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
-    HWND hwndLblUnit = nullptr, hwndComboUnit = nullptr;
-    HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
-    HWND hwndBtnSave = nullptr, hwndBtnCancel = nullptr;
-    HFONT hFontDlg = nullptr;
-    int dpi = 96;
-    int originalOffset = 0;
-};
+static void UpdateTotalValues() {
+    wchar_t text[64] = {};
+    FormatBytes(g_sampler.totalIn, text, _countof(text));
+    if (g_hwndTotalDown) SetWindowTextW(g_hwndTotalDown, text);
+    FormatBytes(g_sampler.totalOut, text, _countof(text));
+    if (g_hwndTotalUp) SetWindowTextW(g_hwndTotalUp, text);
+
+    FormatBytes(g_settings.lifetimeDownloaded, text, _countof(text));
+    if (g_hwndLifetimeDownValue) SetWindowTextW(g_hwndLifetimeDownValue, text);
+    FormatBytes(g_settings.lifetimeUploaded, text, _countof(text));
+    if (g_hwndLifetimeUpValue) SetWindowTextW(g_hwndLifetimeUpValue, text);
+
+    wchar_t date[16] = {};
+    wchar_t title[64] = L"Total data";
+    if (FormatLifetimeSinceDate(g_settings.lifetimeSince, date, _countof(date))) {
+        swprintf_s(title, L"Total data since %s", date);
+    }
+    if (g_hwndLifetimeTitle) SetWindowTextW(g_hwndLifetimeTitle, title);
+}
 
 static COLORREF PickColor(HWND hwndOwner, COLORREF initColor) {
     static COLORREF customColors[16] = {};
@@ -870,360 +992,250 @@ static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
     }
 }
 
-static void RelayoutSettingsDialog(SettingsDialogState* state, int dpi) {
-    state->dpi = dpi;
-    HFONT oldFont = state->hFontDlg;
-    state->hFontDlg = MakeFont(L"Segoe UI", 9.0, 0, dpi);
-
-    struct SetItem {
-        HWND hwnd;
-        int x, y, w, h;
-    } items[] = {
-        { state->hwndLblDown,   20,  20, 140, 25 },
-        { state->hwndBtnDown,  170,  16,  80, 25 },
-        { state->hwndLblUp,     20,  55, 140, 25 },
-        { state->hwndBtnUp,    170,  51,  80, 25 },
-        { state->hwndLblFont,   20,  90, 140, 25 },
-        { state->hwndBtnFont,  170,  86,  80, 25 },
-        { state->hwndPreview,  270,  16, 120, 80 },
-        { state->hwndLblOffset, 20, 125, 145, 25 },
-        { state->hwndEditOffset,170,121,  65, 25 },
-        { state->hwndSpinOffset,235,121,  18, 25 },
-        { state->hwndLblOffsetUnit,258,125,  25, 25 },
-        { state->hwndBtnOffsetReset,300,121,90, 25 },
-        { state->hwndLblUnit,    20, 160, 145, 25 },
-        { state->hwndComboUnit, 170, 156, 130, 120 },
-        { state->hwndLblDecimals,20,195, 145, 25 },
-        { state->hwndComboDecimals,170,191,80,120 },
-        { state->hwndBtnSave,  230, 245,  75, 28 },
-        { state->hwndBtnCancel,315, 245,  75, 28 },
-    };
-
-    for (const auto& it : items) {
-        if (it.hwnd) {
-            SendMessageW(it.hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(state->hFontDlg), TRUE);
-            SetWindowPos(it.hwnd, nullptr,
-                         ScaleDpi(it.x, dpi), ScaleDpi(it.y, dpi),
-                         ScaleDpi(it.w, dpi), ScaleDpi(it.h, dpi),
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-    }
-
-    if (oldFont) {
-        DeleteObject(oldFont);
-    }
+static HWND CreateMainButton(HWND parent, const wchar_t* text, int id, DWORD style = BS_PUSHBUTTON) {
+    DWORD tabStop = style == BS_GROUPBOX ? 0 : WS_TABSTOP;
+    return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | tabStop | style,
+                           0, 0, 0, 0, parent,
+                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
 }
 
-static LRESULT CALLBACK SettingsPreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    SettingsDialogState* state = reinterpret_cast<SettingsDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        int dpi = state ? state->dpi : 96;
-
-        AppSettings previewSettings;
-        if (state) previewSettings = state->tempSettings;
-
-        FillRect(hdc, &rc, g_brushBg);
-
-        // Draw border
-        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
-        HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-        HBRUSH hOldBrush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
-        Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-        SelectObject(hdc, hOldBrush);
-        SelectObject(hdc, hOldPen);
-        DeleteObject(hPen);
-
-        HFONT hFont = state ? CreateOverlayFontFromSettings(state->tempSettings, dpi) : nullptr;
-        HFONT hOldFont = hFont ? static_cast<HFONT>(SelectObject(hdc, hFont)) : nullptr;
-        SetBkMode(hdc, TRANSPARENT);
-
-        RECT rcUp = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(8, dpi),
-                      rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(32, dpi) };
-        wchar_t speed[64] = {};
-        wchar_t display[80] = {};
-        FormatSpeed(1547698, previewSettings.minimumSpeedUnit, previewSettings.decimalPlaces,
-                    speed, _countof(speed));
-        swprintf_s(display, L"\u2191  %s", speed);
-        SetTextColor(hdc, previewSettings.up);
-        DrawTextW(hdc, display, -1, &rcUp, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        RECT rcDown = { rc.left + ScaleDpi(5, dpi), rc.top + ScaleDpi(40, dpi),
-                        rc.right - ScaleDpi(5, dpi), rc.top + ScaleDpi(64, dpi) };
-        FormatSpeed(512 * 1024, previewSettings.minimumSpeedUnit, previewSettings.decimalPlaces,
-                    speed, _countof(speed));
-        swprintf_s(display, L"\u2193  %s", speed);
-        SetTextColor(hdc, previewSettings.down);
-        DrawTextW(hdc, display, -1, &rcDown, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-        if (hFont) {
-            SelectObject(hdc, hOldFont);
-            DeleteObject(hFont);
-        }
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    case WM_ERASEBKGND:
-        return 1;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
+static HWND CreateMainLabel(HWND parent, const wchar_t* text, int id) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                           0, 0, 0, 0, parent,
+                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
 }
 
-static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    SettingsDialogState* state = reinterpret_cast<SettingsDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-    case WM_CREATE: {
-        CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        state = reinterpret_cast<SettingsDialogState*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
-        state->hwndDlg = hwnd;
-
-        int dpi = static_cast<int>(GetDpiForWindow(hwnd));
-        if (dpi == 0) dpi = g_currentDpi;
-        state->dpi = dpi;
-
-        auto mkBtn = [&](const wchar_t* txt, int id) {
-            return CreateWindowExW(0, L"BUTTON", txt, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                  0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
-        };
-        auto mkLbl = [&](const wchar_t* txt, int id) {
-            return CreateWindowExW(0, L"STATIC", txt, WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                  0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
-        };
-
-        state->hwndLblDown = mkLbl(L"Download Color:", ID_SET_DOWN_LBL);
-        state->hwndBtnDown = mkBtn(L"Select", ID_SET_DOWN_BTN);
-
-        state->hwndLblUp = mkLbl(L"Upload Color:", ID_SET_UP_LBL);
-        state->hwndBtnUp = mkBtn(L"Select", ID_SET_UP_BTN);
-
-        state->hwndLblFont = mkLbl(L"Overlay Font:", ID_SET_FONT_LBL);
-        state->hwndBtnFont = mkBtn(L"Choose", ID_SET_FONT_BTN);
-
-        state->hwndLblOffset = mkLbl(L"Taskbar meter offset:", ID_SET_OFFSET_LBL);
-        state->hwndEditOffset = CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"EDIT", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_AUTOHSCROLL,
-            0, 0, 0, 0, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_EDIT)), g_hInst, nullptr);
-        state->hwndSpinOffset = CreateWindowExW(
-            0, UPDOWN_CLASSW, nullptr,
-            WS_CHILD | WS_VISIBLE | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,
-            0, 0, 0, 0, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_SPIN)), g_hInst, nullptr);
-        state->hwndLblOffsetUnit = mkLbl(L"px", ID_SET_OFFSET_UNIT);
-        state->hwndBtnOffsetReset = mkBtn(L"Reset", ID_SET_OFFSET_RESET);
-        SendMessageW(state->hwndSpinOffset, UDM_SETRANGE32,
-                     static_cast<WPARAM>(static_cast<INT_PTR>(TASKBAR_METER_OFFSET_MIN)),
-                     static_cast<LPARAM>(TASKBAR_METER_OFFSET_MAX));
-        SendMessageW(state->hwndSpinOffset, UDM_SETBUDDY,
-                     reinterpret_cast<WPARAM>(state->hwndEditOffset), 0);
-        SendMessageW(state->hwndSpinOffset, UDM_SETPOS32, 0,
-                     static_cast<LPARAM>(state->tempSettings.taskbarOffset));
-
-        state->hwndLblUnit = mkLbl(L"Minimum speed unit:", ID_SET_UNIT_LBL);
-        state->hwndComboUnit = CreateWindowExW(
-            0, L"COMBOBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
-            0, 0, 0, 0, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UNIT_COMBO)), g_hInst, nullptr);
-        const wchar_t* unitChoices[] = { L"Auto", L"KB/s", L"MB/s", L"GB/s" };
-        for (const wchar_t* choice : unitChoices) {
-            SendMessageW(state->hwndComboUnit, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice));
-        }
-        SendMessageW(state->hwndComboUnit, CB_SETCURSEL,
-                     static_cast<WPARAM>(state->tempSettings.minimumSpeedUnit), 0);
-
-        state->hwndLblDecimals = mkLbl(L"Decimal places:", ID_SET_DECIMALS_LBL);
-        state->hwndComboDecimals = CreateWindowExW(
-            0, L"COMBOBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
-            0, 0, 0, 0, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_DECIMALS_COMBO)), g_hInst, nullptr);
-        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"0"));
-        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1"));
-        SendMessageW(state->hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"2"));
-        SendMessageW(state->hwndComboDecimals, CB_SETCURSEL,
-                     static_cast<WPARAM>(state->tempSettings.decimalPlaces), 0);
-
-        wchar_t prevCls[] = L"SettingsPreviewPanel";
-        WNDCLASSEXW pwc = { sizeof(pwc) };
-        pwc.lpfnWndProc = SettingsPreviewWndProc;
-        pwc.hInstance = g_hInst;
-        pwc.lpszClassName = prevCls;
-        RegisterClassExW(&pwc);
-
-        state->hwndPreview = CreateWindowExW(0, prevCls, nullptr, WS_CHILD | WS_VISIBLE,
-                                             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_PREVIEW)), g_hInst, nullptr);
-        SetWindowLongPtrW(state->hwndPreview, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
-
-        state->hwndBtnSave = mkBtn(L"Save", ID_SET_SAVE_BTN);
-        state->hwndBtnCancel = mkBtn(L"Cancel", ID_SET_CANCEL_BTN);
-
-        RelayoutSettingsDialog(state, dpi);
-        return 0;
-    }
-    case WM_DPICHANGED: {
-        int newDpi = HIWORD(wp);
-        RECT* prc = reinterpret_cast<RECT*>(lp);
-        SetWindowPos(hwnd, nullptr, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-        if (state) {
-            RelayoutSettingsDialog(state, newDpi);
-        }
-        return 0;
-    }
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = reinterpret_cast<HDC>(wp);
-        SetTextColor(hdc, CLR_WHITE);
-        SetBkColor(hdc, CLR_BG);
-        return reinterpret_cast<LRESULT>(g_brushBg);
-    }
-    case WM_COMMAND: {
-        int id = LOWORD(wp);
-        int code = HIWORD(wp);
-        if (id == ID_SET_OFFSET_EDIT && code == EN_CHANGE && state) {
-            wchar_t text[32] = {};
-            GetWindowTextW(state->hwndEditOffset, text, _countof(text));
-            int offset = 0;
-            if (ParseTaskbarMeterOffset(text, &offset)) {
-                state->tempSettings.taskbarOffset = offset;
-                g_settings.taskbarOffset = offset;
-                PositionTaskbarOverlay();
-            }
-        } else if (id == ID_SET_OFFSET_RESET && state) {
-            SetWindowTextW(state->hwndEditOffset, L"0");
-        } else if (id == ID_SET_UNIT_COMBO && code == CBN_SELCHANGE && state) {
-            int selection = static_cast<int>(SendMessageW(state->hwndComboUnit, CB_GETCURSEL, 0, 0));
-            if (selection >= 0 && selection <= 3) {
-                state->tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(selection);
-                InvalidateRect(state->hwndPreview, nullptr, TRUE);
-            }
-        } else if (id == ID_SET_DECIMALS_COMBO && code == CBN_SELCHANGE && state) {
-            int selection = static_cast<int>(SendMessageW(state->hwndComboDecimals, CB_GETCURSEL, 0, 0));
-            if (selection >= SPEED_DECIMAL_PLACES_MIN && selection <= SPEED_DECIMAL_PLACES_MAX) {
-                state->tempSettings.decimalPlaces = selection;
-                InvalidateRect(state->hwndPreview, nullptr, TRUE);
-            }
-        } else if (id == ID_SET_DOWN_BTN && state) {
-            state->tempSettings.down = PickColor(hwnd, state->tempSettings.down);
-            InvalidateRect(state->hwndPreview, nullptr, TRUE);
-        } else if (id == ID_SET_UP_BTN && state) {
-            state->tempSettings.up = PickColor(hwnd, state->tempSettings.up);
-            InvalidateRect(state->hwndPreview, nullptr, TRUE);
-        } else if (id == ID_SET_FONT_BTN && state) {
-            PickFont(hwnd, &state->tempSettings, state->dpi);
-            InvalidateRect(state->hwndPreview, nullptr, TRUE);
-        } else if (id == ID_SET_SAVE_BTN && state) {
-            wchar_t text[32] = {};
-            GetWindowTextW(state->hwndEditOffset, text, _countof(text));
-            int offset = 0;
-            if (!ParseTaskbarMeterOffset(text, &offset)) {
-                MessageBoxW(hwnd, L"Enter a whole number from -4096 to 4096.",
-                            L"WinNetMeter", MB_OK | MB_ICONWARNING);
-                SetFocus(state->hwndEditOffset);
-                return 0;
-            }
-            state->tempSettings.taskbarOffset = offset;
-            g_settings = state->tempSettings;
-            SaveSettings(&g_settings);
-            UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
-            RefreshFontsAndRelayout(g_currentDpi);
-            UpdateTrayIcon();
-            CreateOrUpdateOverlay();
-            InvalidateRect(g_hwndSpeedDown, nullptr, TRUE);
-            InvalidateRect(g_hwndSpeedUp, nullptr, TRUE);
-            DestroyWindow(hwnd);
-        } else if (id == ID_SET_CANCEL_BTN) {
-            if (state) {
-                g_settings.taskbarOffset = state->originalOffset;
-                PositionTaskbarOverlay();
-            }
-            DestroyWindow(hwnd);
-        }
-        return 0;
-    }
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        FillRect(hdc, &rc, g_brushBg);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    case WM_DESTROY:
-        if (state && state->hFontDlg) {
-            DeleteObject(state->hFontDlg);
-            state->hFontDlg = nullptr;
-        }
-        return 0;
-    case WM_CLOSE:
-        if (state) {
-            g_settings.taskbarOffset = state->originalOffset;
-            PositionTaskbarOverlay();
-        }
-        DestroyWindow(hwnd);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-static void OpenSettingsDialog() {
-    SettingsDialogState state;
+static void CreateSettingsControls(HWND hwnd) {
+    SettingsUiState& state = g_settingsUi;
     state.tempSettings = g_settings;
-    state.hwndDlg = nullptr;
-    state.hwndPreview = nullptr;
-    state.hFontDlg = nullptr;
-    state.originalOffset = g_settings.taskbarOffset;
+    state.hwndGroup = CreateMainButton(hwnd, L"Settings", ID_SETTINGS_GROUP, BS_GROUPBOX);
+    state.hwndLblUpPrefix = CreateMainLabel(hwnd, L"Upload prefix:", ID_SET_UP_PREFIX_LBL);
+    state.hwndEditUpPrefix = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UP_PREFIX_EDIT)), g_hInst, nullptr);
+    state.hwndLblDownPrefix = CreateMainLabel(hwnd, L"Download prefix:", ID_SET_DOWN_PREFIX_LBL);
+    state.hwndEditDownPrefix = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_DOWN_PREFIX_EDIT)), g_hInst, nullptr);
+    SendMessageW(state.hwndEditDownPrefix, EM_SETLIMITTEXT, METER_PREFIX_CAPACITY - 1, 0);
+    SendMessageW(state.hwndEditUpPrefix, EM_SETLIMITTEXT, METER_PREFIX_CAPACITY - 1, 0);
+    state.hwndLblUp = CreateMainLabel(hwnd, L"Upload color:", ID_SET_UP_LBL);
+    state.hwndBtnUp = CreateMainButton(hwnd, L"Select", ID_SET_UP_BTN);
+    state.hwndLblDown = CreateMainLabel(hwnd, L"Download color:", ID_SET_DOWN_LBL);
+    state.hwndBtnDown = CreateMainButton(hwnd, L"Select", ID_SET_DOWN_BTN);
+    state.hwndLblFont = CreateMainLabel(hwnd, L"Taskbar meter font:", ID_SET_FONT_LBL);
+    state.hwndBtnFont = CreateMainButton(hwnd, L"Choose", ID_SET_FONT_BTN);
+    state.hwndLblOffset = CreateMainLabel(hwnd, L"Taskbar meter offset:", ID_SET_OFFSET_LBL);
+    state.hwndEditOffset = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_AUTOHSCROLL,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_EDIT)), g_hInst, nullptr);
+    state.hwndSpinOffset = CreateWindowExW(
+        0, UPDOWN_CLASSW, nullptr,
+        WS_CHILD | WS_VISIBLE | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_OFFSET_SPIN)), g_hInst, nullptr);
+    state.hwndLblOffsetUnit = CreateMainLabel(hwnd, L"px", ID_SET_OFFSET_UNIT);
+    state.hwndBtnOffsetReset = CreateMainButton(hwnd, L"Reset meter", ID_SET_OFFSET_RESET);
+    SendMessageW(state.hwndSpinOffset, UDM_SETRANGE32,
+                 static_cast<WPARAM>(static_cast<INT_PTR>(TASKBAR_METER_OFFSET_MIN)),
+                 static_cast<LPARAM>(TASKBAR_METER_OFFSET_MAX));
+    SendMessageW(state.hwndSpinOffset, UDM_SETBUDDY,
+                 reinterpret_cast<WPARAM>(state.hwndEditOffset), 0);
 
-    wchar_t cls[] = L"WinNetMeterSettings";
-    WNDCLASSEXW wc = { sizeof(wc) };
-    wc.lpfnWndProc = SettingsWndProc;
-    wc.hInstance = g_hInst;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = cls;
-    RegisterClassExW(&wc);
-
-    int w = ScaleDpi(420, g_currentDpi);
-    int h = ScaleDpi(335, g_currentDpi);
-    int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-    int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-
-    HWND hwndDlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME,
-        cls, L"Settings",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        x, y, w, h,
-        g_hwndMain, nullptr, g_hInst, &state);
-
-    if (!hwndDlg) return;
-
-    EnableWindow(g_hwndMain, FALSE);
-
-    MSG msg = {};
-    while (IsWindow(hwndDlg)) {
-        BOOL result = GetMessageW(&msg, nullptr, 0, 0);
-        if (result <= 0) {
-            PostQuitMessage(result == 0 ? static_cast<int>(msg.wParam) : 1);
-            break;
-        }
-        if (!IsDialogMessageW(hwndDlg, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+    state.hwndLblUnit = CreateMainLabel(hwnd, L"Minimum speed unit:", ID_SET_UNIT_LBL);
+    state.hwndComboUnit = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UNIT_COMBO)), g_hInst, nullptr);
+    const wchar_t* unitChoices[] = { L"Auto", L"KB/s", L"MB/s", L"GB/s" };
+    for (const wchar_t* choice : unitChoices) {
+        SendMessageW(state.hwndComboUnit, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice));
     }
 
-    if (IsWindow(g_hwndMain)) {
-        EnableWindow(g_hwndMain, TRUE);
-        if (IsWindowVisible(g_hwndMain)) SetForegroundWindow(g_hwndMain);
+    state.hwndLblDecimals = CreateMainLabel(hwnd, L"Decimal places:", ID_SET_DECIMALS_LBL);
+    state.hwndComboDecimals = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_DECIMALS_COMBO)), g_hInst, nullptr);
+    for (int decimal = SPEED_DECIMAL_PLACES_MIN; decimal <= SPEED_DECIMAL_PLACES_MAX; ++decimal) {
+        wchar_t text[2] = { static_cast<wchar_t>(L'0' + decimal), L'\0' };
+        SendMessageW(state.hwndComboDecimals, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
     }
+
+    state.hwndCheckWidget = CreateMainButton(hwnd, L"Show taskbar meter", ID_SET_WIDGET_CHECK, BS_AUTOCHECKBOX);
+    state.hwndCheckTray = CreateMainButton(hwnd, L"Show tray icon", ID_SET_TRAY_CHECK, BS_AUTOCHECKBOX);
+    state.hwndCheckStartup = CreateMainButton(hwnd, L"Start with Windows", ID_SET_STARTUP_CHECK, BS_AUTOCHECKBOX);
+    state.hwndBtnApply = CreateMainButton(hwnd, L"Apply", ID_SET_SAVE_BTN, BS_DEFPUSHBUTTON);
+    state.hwndBtnExit = CreateMainButton(hwnd, L"Exit", ID_EXIT_APP);
+    RefreshSettingsControls();
+}
+
+static void RefreshSettingsControls() {
+    SettingsUiState& state = g_settingsUi;
+    state.tempSettings = g_settings;
+    if (!state.hwndEditOffset) return;
+    state.refreshing = true;
+    SetWindowTextW(state.hwndEditDownPrefix, g_settings.downPrefix);
+    SetWindowTextW(state.hwndEditUpPrefix, g_settings.upPrefix);
+    SendMessageW(state.hwndSpinOffset, UDM_SETPOS32, 0, static_cast<LPARAM>(g_settings.taskbarOffset));
+    SendMessageW(state.hwndComboUnit, CB_SETCURSEL, static_cast<WPARAM>(g_settings.minimumSpeedUnit), 0);
+    SendMessageW(state.hwndComboDecimals, CB_SETCURSEL, g_settings.decimalPlaces, 0);
+    SendMessageW(state.hwndCheckWidget, BM_SETCHECK, g_settings.showWidget ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(state.hwndCheckTray, BM_SETCHECK, g_settings.showTrayIcon ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(state.hwndCheckStartup, BM_SETCHECK, g_settings.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
+    state.refreshing = false;
+}
+
+static void ApplyLiveMeterSettings(bool fontChanged = false) {
+    SettingsUiState& state = g_settingsUi;
+    g_settings.down = state.tempSettings.down;
+    g_settings.up = state.tempSettings.up;
+    wcscpy_s(g_settings.downPrefix, _countof(g_settings.downPrefix), state.tempSettings.downPrefix);
+    wcscpy_s(g_settings.upPrefix, _countof(g_settings.upPrefix), state.tempSettings.upPrefix);
+    wcscpy_s(g_settings.fontFamily, _countof(g_settings.fontFamily), state.tempSettings.fontFamily);
+    g_settings.fontSize = state.tempSettings.fontSize;
+    g_settings.fontStyle = state.tempSettings.fontStyle;
+    g_settings.taskbarOffset = state.tempSettings.taskbarOffset;
+    g_settings.minimumSpeedUnit = state.tempSettings.minimumSpeedUnit;
+    g_settings.decimalPlaces = state.tempSettings.decimalPlaces;
+    SaveSettings(&g_settings);
+    UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
+    if (fontChanged) RefreshFontsAndRelayout(g_currentDpi);
+    UpdateTrayIcon();
+    CreateOrUpdateOverlay();
+}
+
+static bool ApplySettings(HWND hwnd) {
+    SettingsUiState& state = g_settingsUi;
+    GetWindowTextW(state.hwndEditDownPrefix, state.tempSettings.downPrefix,
+                   _countof(state.tempSettings.downPrefix));
+    GetWindowTextW(state.hwndEditUpPrefix, state.tempSettings.upPrefix,
+                   _countof(state.tempSettings.upPrefix));
+    wchar_t text[32] = {};
+    GetWindowTextW(state.hwndEditOffset, text, _countof(text));
+    int offset = 0;
+    if (!ParseTaskbarMeterOffset(text, &offset)) {
+        MessageBoxW(hwnd, L"Enter a whole number from -4096 to 4096.",
+                    L"WinNetMeter", MB_OK | MB_ICONWARNING);
+        SetFocus(state.hwndEditOffset);
+        return false;
+    }
+
+    state.tempSettings.taskbarOffset = offset;
+    int unit = static_cast<int>(SendMessageW(state.hwndComboUnit, CB_GETCURSEL, 0, 0));
+    int decimals = static_cast<int>(SendMessageW(state.hwndComboDecimals, CB_GETCURSEL, 0, 0));
+    if (unit >= 0 && unit <= 3) state.tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(unit);
+    if (decimals >= SPEED_DECIMAL_PLACES_MIN && decimals <= SPEED_DECIMAL_PLACES_MAX) {
+        state.tempSettings.decimalPlaces = decimals;
+    }
+    state.tempSettings.showWidget = SendMessageW(state.hwndCheckWidget, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    state.tempSettings.showTrayIcon = SendMessageW(state.hwndCheckTray, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    state.tempSettings.startWithWindows = SendMessageW(state.hwndCheckStartup, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (!HasUiEntryPoint(state.tempSettings)) {
+        MessageBoxW(hwnd, L"Keep either the taskbar meter or tray icon enabled so WinNetMeter can be opened.",
+                    L"WinNetMeter", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (!SetStartWithWindowsEnabled(state.tempSettings.startWithWindows != 0)) {
+        MessageBoxW(hwnd, L"Windows startup registration could not be updated.",
+                    L"WinNetMeter", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    state.tempSettings.lifetimeDownloaded = g_settings.lifetimeDownloaded;
+    state.tempSettings.lifetimeUploaded = g_settings.lifetimeUploaded;
+    wcscpy_s(state.tempSettings.lifetimeSince, _countof(state.tempSettings.lifetimeSince),
+             g_settings.lifetimeSince);
+    g_settings = state.tempSettings;
+    SaveSettings(&g_settings);
+    UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
+    RefreshFontsAndRelayout(g_currentDpi);
+    SetupTrayIcon();
+    CreateOrUpdateOverlay();
+    InvalidateRect(g_hwndMain, nullptr, TRUE);
+    RefreshSettingsControls();
+    return true;
+}
+
+static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
+    SettingsUiState& state = g_settingsUi;
+    if ((id == ID_SET_DOWN_PREFIX_EDIT || id == ID_SET_UP_PREFIX_EDIT) && code == EN_CHANGE) {
+        if (state.refreshing) return true;
+        GetWindowTextW(state.hwndEditDownPrefix, state.tempSettings.downPrefix,
+                       _countof(state.tempSettings.downPrefix));
+        GetWindowTextW(state.hwndEditUpPrefix, state.tempSettings.upPrefix,
+                       _countof(state.tempSettings.upPrefix));
+        ApplyLiveMeterSettings();
+    } else if (id == ID_SET_OFFSET_EDIT && code == EN_CHANGE) {
+        if (state.refreshing) return true;
+        wchar_t text[32] = {};
+        GetWindowTextW(state.hwndEditOffset, text, _countof(text));
+        int offset = 0;
+        if (ParseTaskbarMeterOffset(text, &offset)) {
+            state.tempSettings.taskbarOffset = offset;
+            ApplyLiveMeterSettings();
+        }
+    } else if (id == ID_SET_OFFSET_RESET) {
+        AppSettings defaults;
+        state.tempSettings.down = defaults.down;
+        state.tempSettings.up = defaults.up;
+        wcscpy_s(state.tempSettings.downPrefix, _countof(state.tempSettings.downPrefix), defaults.downPrefix);
+        wcscpy_s(state.tempSettings.upPrefix, _countof(state.tempSettings.upPrefix), defaults.upPrefix);
+        wcscpy_s(state.tempSettings.fontFamily, _countof(state.tempSettings.fontFamily), defaults.fontFamily);
+        state.tempSettings.fontSize = defaults.fontSize;
+        state.tempSettings.fontStyle = defaults.fontStyle;
+        state.tempSettings.taskbarOffset = defaults.taskbarOffset;
+        state.tempSettings.minimumSpeedUnit = defaults.minimumSpeedUnit;
+        state.tempSettings.decimalPlaces = defaults.decimalPlaces;
+        ApplyLiveMeterSettings(true);
+        RefreshSettingsControls();
+    } else if (id == ID_SET_UNIT_COMBO && code == CBN_SELCHANGE) {
+        int selection = static_cast<int>(SendMessageW(state.hwndComboUnit, CB_GETCURSEL, 0, 0));
+        if (selection >= 0 && selection <= 3) {
+            state.tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(selection);
+            ApplyLiveMeterSettings();
+        }
+    } else if (id == ID_SET_DECIMALS_COMBO && code == CBN_SELCHANGE) {
+        int selection = static_cast<int>(SendMessageW(state.hwndComboDecimals, CB_GETCURSEL, 0, 0));
+        if (selection >= SPEED_DECIMAL_PLACES_MIN && selection <= SPEED_DECIMAL_PLACES_MAX) {
+            state.tempSettings.decimalPlaces = selection;
+            ApplyLiveMeterSettings();
+        }
+    } else if (id == ID_SET_DOWN_BTN) {
+        state.tempSettings.down = PickColor(hwnd, state.tempSettings.down);
+        ApplyLiveMeterSettings();
+    } else if (id == ID_SET_UP_BTN) {
+        state.tempSettings.up = PickColor(hwnd, state.tempSettings.up);
+        ApplyLiveMeterSettings();
+    } else if (id == ID_SET_FONT_BTN) {
+        PickFont(hwnd, &state.tempSettings, state.dpi);
+        ApplyLiveMeterSettings(true);
+    } else if (id == ID_SET_SAVE_BTN) {
+        ApplySettings(hwnd);
+    } else if (id == ID_LIFETIME_RESET) {
+        if (MessageBoxW(hwnd,
+                        L"Reset the saved download and upload totals?\n\nThis cannot be undone.",
+                        L"Reset total data", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
+            ResetLifetimeTotals(&g_settings);
+            SaveSettings(&g_settings);
+            g_lastTotalsSaveTick = GetTickCount64();
+            g_totalsDirty = false;
+            UpdateTotalValues();
+        }
+    } else if (id == ID_EXIT_APP) {
+        DestroyWindow(hwnd);
+    } else {
+        return false;
+    }
+    return true;
 }
 
 // ---- Main Window Procedure ---------------------------------------------------
@@ -1245,6 +1257,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                   hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_hInst, nullptr);
         };
 
+        g_hwndStatusGroup = CreateMainButton(hwnd, L"Status", ID_STATUS_GROUP, BS_GROUPBOX);
         g_hwndIfaceLbl = mkLabel(L"Network Interface:", ID_IFACE_LABEL, SS_LEFT);
 
         g_combo = CreateWindowExW(0, L"COMBOBOX", nullptr,
@@ -1260,14 +1273,24 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_hwndUpTitle = mkLabel(L"Upload Speed:", ID_UP_TITLE, SS_LEFT);
         g_hwndSpeedUp = mkLabel(g_szUpSpeed, ID_SPEED_UP, SS_RIGHT);
 
-        g_hwndTotdTitle = mkLabel(L"Total Downloaded:", ID_TOTD_TITLE, SS_LEFT);
+        g_hwndTotdTitle = mkLabel(L"Session downloaded:", ID_TOTD_TITLE, SS_LEFT);
         g_hwndTotalDown = mkLabel(L"0.00 MB", ID_TOTAL_DOWN, SS_RIGHT);
 
-        g_hwndTotuTitle = mkLabel(L"Total Uploaded:", ID_TOTU_TITLE, SS_LEFT);
+        g_hwndTotuTitle = mkLabel(L"Session uploaded:", ID_TOTU_TITLE, SS_LEFT);
         g_hwndTotalUp = mkLabel(L"0.00 MB", ID_TOTAL_UP, SS_RIGHT);
 
-        g_hwndAuthor = mkLabel(L"WinNetMeter v0.1.0\nFor support, visit: github.com/pyed/WinNetMeter",
+        g_hwndLifetimeTitle = mkLabel(L"Total data", ID_LIFETIME_TITLE, SS_LEFT);
+        g_hwndLifetimeDown = mkLabel(L"Downloaded:", ID_LIFETIME_DOWN, SS_LEFT);
+        g_hwndLifetimeDownValue = mkLabel(L"0 B", ID_LIFETIME_DOWN_VALUE, SS_RIGHT);
+        g_hwndLifetimeUp = mkLabel(L"Uploaded:", ID_LIFETIME_UP, SS_LEFT);
+        g_hwndLifetimeUpValue = mkLabel(L"0 B", ID_LIFETIME_UP_VALUE, SS_RIGHT);
+        g_hwndLifetimeReset = CreateMainButton(hwnd, L"Reset total", ID_LIFETIME_RESET);
+
+        g_hwndAuthor = mkLabel(L"WinNetMeter v" WINNETMETER_VERSION_STRING_W
+                               L"\nSupport: github.com/pyed/WinNetMeter",
                                ID_AUTHOR_LINK, SS_RIGHT | SS_NOTIFY);
+        CreateSettingsControls(hwnd);
+        UpdateTotalValues();
 
         RefreshFontsAndRelayout(g_currentDpi);
 
@@ -1279,14 +1302,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORSTATIC: {
         HDC hdc = reinterpret_cast<HDC>(wp);
         int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
-        COLORREF c = CLR_LABEL;
-        if (id == ID_SPEED_DOWN) c = g_settings.down;
-        else if (id == ID_SPEED_UP) c = g_settings.up;
-        else if (id == ID_TOTAL_DOWN || id == ID_TOTAL_UP || id == ID_IFACE_LABEL) c = CLR_WHITE;
-        else if (id == ID_AUTHOR_LINK) c = CLR_GRAY;
-        SetTextColor(hdc, c);
-        SetBkColor(hdc, CLR_BG);
-        return reinterpret_cast<LRESULT>(g_brushBg);
+        SetTextColor(hdc, GetSysColor(id == ID_AUTHOR_LINK ? COLOR_HOTLIGHT : COLOR_WINDOWTEXT));
+        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
     }
     case WM_COMMAND: {
         int code = HIWORD(wp);
@@ -1299,6 +1317,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         } else if (id == ID_AUTHOR_LINK) {
             ShellExecuteW(nullptr, L"open", L"https://github.com/pyed/WinNetMeter", nullptr, nullptr, SW_SHOWNORMAL);
+        } else {
+            HandleSettingsCommand(hwnd, id, code);
         }
         return 0;
     }
@@ -1318,14 +1338,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
-        FillRect(hdc, &rc, g_brushBg);
-
-        // Separator line at y=145
-        RECT line = { ScaleDpi(20, g_currentDpi), ScaleDpi(145, g_currentDpi),
-                      ScaleDpi(20 + 390, g_currentDpi), ScaleDpi(147, g_currentDpi) };
-        HBRUSH b = CreateSolidBrush(CLR_GRAY);
-        FillRect(hdc, &line, b);
-        DeleteObject(b);
+        FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -1340,13 +1353,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, ID_TRAY_SHOW, L"Show Window");
+            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, ID_TRAY_SHOW, L"Open WinNetMeter");
             InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, ID_TRAY_SETTINGS, L"Settings...");
-            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING | (g_settings.showWidget ? MF_CHECKED : MF_UNCHECKED),
+            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING | (g_settings.showWidget ? MF_CHECKED : MF_UNCHECKED),
                         ID_TRAY_TOGGLE_WIDGET, L"Show Taskbar Widget");
-            InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 5, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT, L"Exit");
+            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT, L"Exit");
 
             SetForegroundWindow(hwnd);
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
@@ -1354,12 +1366,11 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             if (cmd == ID_TRAY_SHOW) {
                 ShowMainWindow();
-            } else if (cmd == ID_TRAY_SETTINGS) {
-                OpenSettingsDialog();
             } else if (cmd == ID_TRAY_TOGGLE_WIDGET) {
                 g_settings.showWidget = !g_settings.showWidget;
                 SaveSettings(&g_settings);
                 CreateOrUpdateOverlay();
+                if (IsWindowVisible(hwnd)) RefreshSettingsControls();
             } else if (cmd == ID_TRAY_EXIT) {
                 DestroyWindow(hwnd);
             }
@@ -1387,6 +1398,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);
+        SaveSettings(&g_settings);
         RemoveTrayIcon();
         if (g_hwndOverlay) {
             DestroyWindow(g_hwndOverlay);
@@ -1398,15 +1410,18 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
-    HANDLE singleInstance = CreateMutexW(nullptr, TRUE, SINGLE_INSTANCE_MUTEX);
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR commandLine, int) {
+    bool isIntegrationTest = wcsstr(commandLine, L"--integration-test") != nullptr;
+    g_mainWindowClass = isIntegrationTest ? TEST_WINDOW_CLASS : MAIN_WINDOW_CLASS;
+    HANDLE singleInstance = CreateMutexW(nullptr, TRUE,
+                                         isIntegrationTest ? TEST_INSTANCE_MUTEX : SINGLE_INSTANCE_MUTEX);
     if (!singleInstance) {
         return 1;
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(singleInstance);
-        HWND existing = FindWindowW(MAIN_WINDOW_CLASS, nullptr);
-        if (existing && IsWindowVisible(existing)) {
+        HWND existing = FindWindowW(g_mainWindowClass, nullptr);
+        if (existing) {
             ShowWindowAsync(existing, SW_RESTORE);
             SetForegroundWindow(existing);
         }
@@ -1421,25 +1436,27 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_uTaskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
     LoadSettings(&g_settings);
+    g_lastTotalsSaveTick = GetTickCount64();
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = hInst;
     wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = MAIN_WINDOW_CLASS;
+    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.lpszClassName = g_mainWindowClass;
     RegisterClassExW(&wc);
 
     HDC hdcScreen = GetDC(nullptr);
     g_currentDpi = GetDeviceCaps(hdcScreen, LOGPIXELSX);
     ReleaseDC(nullptr, hdcScreen);
 
-    int w = ScaleDpi(450, g_currentDpi);
-    int h = ScaleDpi(300, g_currentDpi);
+    int w = ScaleDpi(730, g_currentDpi);
+    int h = ScaleDpi(490, g_currentDpi);
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, MAIN_WINDOW_CLASS, L"WinNetMeter",
+    HWND hwnd = CreateWindowExW(0, g_mainWindowClass, L"WinNetMeter",
                                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                 x, y, w, h, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) {
@@ -1458,8 +1475,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     MSG msg = {};
     BOOL result = 0;
     while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
     if (result == -1 && IsWindow(hwnd)) DestroyWindow(hwnd);
 
@@ -1478,7 +1497,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     if (g_fontCombo) DeleteObject(g_fontCombo);
     if (g_fontAuthor) DeleteObject(g_fontAuthor);
     if (g_fontOverlay) DeleteObject(g_fontOverlay);
-    if (g_brushBg) DeleteObject(g_brushBg);
     ReleaseMutex(singleInstance);
     CloseHandle(singleInstance);
 

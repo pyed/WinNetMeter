@@ -58,6 +58,16 @@ void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
     }
 }
 
+void FormatPrefixedSpeed(const wchar_t* prefix, const wchar_t* speed, wchar_t* out, size_t maxLen) {
+    if (!out || maxLen == 0) return;
+    const wchar_t* safeSpeed = speed ? speed : L"";
+    if (prefix && prefix[0]) {
+        _snwprintf_s(out, maxLen, _TRUNCATE, L"%s  %s", prefix, safeSpeed);
+    } else {
+        wcsncpy_s(out, maxLen, safeSpeed, _TRUNCATE);
+    }
+}
+
 // Retrieves live row by stable NET_LUID
 static bool FetchRowByLuid(NET_LUID luid, MIB_IF_ROW2* row) {
     if (luid.Value == 0) return false;
