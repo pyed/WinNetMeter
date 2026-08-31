@@ -38,7 +38,7 @@ jobs:
       - name: Stage Release Package and Compute Checksums
         shell: pwsh
         run: |
-          $version = (Select-String src/version.h -Pattern '^#define WINNETMETER_VERSION_STRING "([^"]+)"$').Matches[0].Groups[1].Value
+          $version = (Select-String src/version.h -Pattern '^#define WINNETMETER_VERSION_STRING "([^"]+)"\r?$').Matches[0].Groups[1].Value
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$version" }
           $pkgName = "WinNetMeter-$tag-windows-x64"
           $stagingDir = "dist/$pkgName"

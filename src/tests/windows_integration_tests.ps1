@@ -193,7 +193,7 @@ $exePath = (Resolve-Path (Join-Path $repoRoot 'src\out\WinNetMeter.exe')).Path
 $settingsPath = Join-Path $env:APPDATA 'WinNetMeter\settings.ini'
 $mainClass = 'WinNetMeterMainTest'
 $versionHeader = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\version.h')
-if ($versionHeader -notmatch '(?m)^#define WINNETMETER_VERSION_STRING "([^"]+)"$') { throw 'Version header is malformed' }
+if ($versionHeader -notmatch '(?m)^#define WINNETMETER_VERSION_STRING "([^"]+)"\r?$') { throw 'Version header is malformed' }
 $sourceVersion = $Matches[1]
 
 function Assert-True([bool]$Condition, [string]$Message) {
