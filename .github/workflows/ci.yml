@@ -52,3 +52,47 @@ jobs:
           name: WinNetMeter-windows-x64
           path: src/out/WinNetMeter.exe
           if-no-files-found: error
+
+  integration:
+    name: Behavioral Integration Checks (x64 Windows)
+    runs-on: windows-latest
+    needs: build
+    # These drive a real window, taskbar and Explorer on the runner. They are
+    # reported but not yet gating while their stability on hosted runners is
+    # established; flip to blocking once they have a clean run history.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build WinNetMeter (Release x64)
+        shell: cmd
+        working-directory: src
+        run: build.bat
+
+      - name: Run Behavioral Integration Checks
+        shell: pwsh
+        run: |
+          $checks = @(
+            'SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
+            'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'ResourceLeak',
+            'FormattingDisplay', 'Preferences', 'CustomizationTotals'
+          )
+          $failed = @()
+          foreach ($check in $checks) {
+            Write-Host "::group::$check"
+            try {
+              ./src/tests/windows_integration_tests.ps1 -Check $check
+              Write-Host "PASS: $check"
+            } catch {
+              Write-Host "FAIL: $check - $($_.Exception.Message)"
+              $failed += $check
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error "Failed checks: $($failed -join ', ')"
+            exit 1
+          }
+          Write-Host "All $($checks.Count) behavioral checks passed."
