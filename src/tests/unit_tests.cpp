@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <string.h>
 #include <math.h>
+#include <string>
 #include "../network.h"
 #include "../overlay.h"
 #include "../settings.h"
@@ -714,6 +715,125 @@ void TestFullscreenDetection() {
     printf("PASS: TestFullscreenDetection (cross-monitor and oversized)\n");
 }
 
+// Regression: SaveSettingsCustom used to return void and ignore every write
+// result, so a read-only or locked settings file silently discarded settings
+// and accumulated traffic totals.
+void TestSaveReportsFailure() {
+    const wchar_t* path = L".\\test_settings_failure.ini";
+    DeleteFileW(path);
+
+    AppSettings s;
+    s.lifetimeDownloaded = 1000;
+    s.lifetimeUploaded = 2000;
+    assert(SaveSettingsCustom(&s, path) == true);
+
+    // A read-only target must be reported, not silently skipped.
+    SetFileAttributesW(path, FILE_ATTRIBUTE_READONLY);
+    AddLifetimeTraffic(&s, 5ULL * 1024 * 1024 * 1024, 900);
+    assert(SaveSettingsCustom(&s, path) == false);
+
+    // The previous contents must survive a failed save intact.
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    AppSettings afterFailure;
+    LoadSettingsCustom(&afterFailure, path);
+    assert(afterFailure.lifetimeDownloaded == 1000);
+    assert(afterFailure.lifetimeUploaded == 2000);
+    printf("PASS: TestSaveReportsFailure\n");
+
+    // Once writable again the save succeeds and round-trips.
+    assert(SaveSettingsCustom(&s, path) == true);
+    AppSettings reloaded;
+    LoadSettingsCustom(&reloaded, path);
+    assert(reloaded.lifetimeDownloaded == s.lifetimeDownloaded);
+    assert(reloaded.lifetimeUploaded == s.lifetimeUploaded);
+    printf("PASS: TestSaveRecoversAfterFailure\n");
+
+    // The atomic write must not leave its temp file behind.
+    std::wstring temp = std::wstring(path) + L".tmp";
+    assert(GetFileAttributesW(temp.c_str()) == INVALID_FILE_ATTRIBUTES);
+    printf("PASS: TestSaveLeavesNoTempFile\n");
+
+    DeleteFileW(path);
+}
+
+// The settings file is now written by hand as UTF-16LE, and prefixes/font
+// names may be non-ASCII, so verify a full non-ASCII round trip.
+void TestUnicodeSettingsRoundTrip() {
+    const wchar_t* path = L".\\test_settings_unicode.ini";
+    DeleteFileW(path);
+
+    AppSettings s;
+    wcscpy_s(s.downPrefix, L"↓下");   // down arrow + CJK
+    wcscpy_s(s.upPrefix, L"↑上");
+    wcscpy_s(s.fontFamily, L"メイリオ"); // Japanese font name
+    s.fontSize = 9.5;
+    s.taskbarOffset = -1234;
+    s.decimalPlaces = 1;
+    s.minimumSpeedUnit = MinimumSpeedUnit::Megabytes;
+    s.lifetimeDownloaded = 123456789012ULL;
+    assert(SaveSettingsCustom(&s, path) == true);
+
+    AppSettings r;
+    LoadSettingsCustom(&r, path);
+    assert(wcscmp(r.downPrefix, s.downPrefix) == 0);
+    assert(wcscmp(r.upPrefix, s.upPrefix) == 0);
+    assert(wcscmp(r.fontFamily, s.fontFamily) == 0);
+    assert(r.taskbarOffset == -1234);
+    assert(r.decimalPlaces == 1);
+    assert(r.minimumSpeedUnit == MinimumSpeedUnit::Megabytes);
+    assert(r.lifetimeDownloaded == 123456789012ULL);
+    printf("PASS: TestUnicodeSettingsRoundTrip\n");
+
+    DeleteFileW(path);
+}
+
+// Settings files written by earlier versions are ANSI. GetPrivateProfileString
+// still reads them, so an upgrade must not lose the user's configuration.
+void TestLegacyAnsiSettingsStillLoad() {
+    const wchar_t* path = L".\\test_settings_legacy_ansi.ini";
+    DeleteFileW(path);
+
+    // Exactly what the previous WritePrivateProfileStringW implementation produced.
+    const char* ansi =
+        "[Overlay]\r\nFontFamily=Consolas\r\nDownloadPrefix=x2193\r\nUploadPrefix=x2191\r\n"
+        "FontSize=10.0\r\nFontStyle=0\r\nShowWidget=0\r\nTaskbarOffset=250\r\n"
+        "MinimumSpeedUnit=GB/s\r\nDecimalPlaces=0\r\nDownloadColor=255\r\nUploadColor=65280\r\n"
+        "[General]\r\nShowTrayIcon=1\r\n"
+        "[Totals]\r\nDownloaded=99887766\r\nUploaded=5544332211\r\nSince=2025-01-31\r\n";
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    assert(f != INVALID_HANDLE_VALUE);
+    DWORD written = 0;
+    WriteFile(f, ansi, static_cast<DWORD>(strlen(ansi)), &written, nullptr);
+    CloseHandle(f);
+
+    AppSettings r;
+    LoadSettingsCustom(&r, path);
+    assert(wcscmp(r.fontFamily, L"Consolas") == 0);
+    assert(wcscmp(r.downPrefix, L"↓") == 0);
+    assert(r.showWidget == 0);
+    assert(r.showTrayIcon == 1);
+    assert(r.taskbarOffset == 250);
+    assert(r.minimumSpeedUnit == MinimumSpeedUnit::Gigabytes);
+    assert(r.decimalPlaces == 0);
+    assert(r.down == 255);
+    assert(r.up == 65280);
+    assert(r.lifetimeDownloaded == 99887766ULL);
+    assert(r.lifetimeUploaded == 5544332211ULL);
+    assert(wcscmp(r.lifetimeSince, L"2025-01-31") == 0);
+    printf("PASS: TestLegacyAnsiSettingsStillLoad\n");
+
+    // Re-saving upgrades it in place without losing anything.
+    assert(SaveSettingsCustom(&r, path) == true);
+    AppSettings upgraded;
+    LoadSettingsCustom(&upgraded, path);
+    assert(wcscmp(upgraded.fontFamily, L"Consolas") == 0);
+    assert(upgraded.lifetimeUploaded == 5544332211ULL);
+    assert(wcscmp(upgraded.lifetimeSince, L"2025-01-31") == 0);
+    printf("PASS: TestLegacyAnsiSettingsUpgradeInPlace\n");
+
+    DeleteFileW(path);
+}
+
 int main() {
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestSpeedFormatting();
@@ -721,6 +841,9 @@ int main() {
     TestPrefixesAndLifetimeTotals();
     TestNetSamplerMock();
     TestSettings();
+    TestSaveReportsFailure();
+    TestUnicodeSettingsRoundTrip();
+    TestLegacyAnsiSettingsStillLoad();
     TestSpeedFormattingSettings();
     TestTaskbarOffsetSettings();
     TestLiveAdapters();

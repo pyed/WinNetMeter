@@ -53,7 +53,9 @@ inline bool HasUiEntryPoint(const AppSettings& s) {
 }
 
 void LoadSettings(AppSettings* s);
-void SaveSettings(const AppSettings* s);
+// Returns false if the settings could not be persisted (read-only file, full
+// disk, locked profile). The on-disk file is left untouched on failure.
+bool SaveSettings(const AppSettings* s);
 void GetSettingsPath(wchar_t* buf, size_t maxLen);
 bool IsStartWithWindowsEnabled();
 bool SetStartWithWindowsEnabled(bool enabled);
@@ -62,4 +64,4 @@ void ResetLifetimeTotals(AppSettings* s);
 bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen);
 
 void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath);
-void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath);
+bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath);

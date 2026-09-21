@@ -173,52 +173,119 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     }
 }
 
-void SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
-    std::wstring path(filePath);
-    size_t slash = path.find_last_of(L"\\/");
-    if (slash != std::wstring::npos) {
-        CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
-    }
-
+// Renders the whole settings file in memory. Written as UTF-16LE with a BOM so
+// GetPrivateProfileStringW reads it back as Unicode; that API also still reads
+// the ANSI files produced by earlier versions, so upgrades keep working.
+static std::wstring BuildSettingsIni(const AppSettings* s) {
     wchar_t num[32] = {};
-    WritePrivateProfileStringW(L"Overlay", L"FontFamily", s->fontFamily, filePath);
-    std::wstring encodedPrefix = EncodePrefix(s->downPrefix);
-    WritePrivateProfileStringW(L"Overlay", L"DownloadPrefix", encodedPrefix.c_str(), filePath);
-    encodedPrefix = EncodePrefix(s->upPrefix);
-    WritePrivateProfileStringW(L"Overlay", L"UploadPrefix", encodedPrefix.c_str(), filePath);
+    std::wstring out;
+
+    out += L"[General]\r\n";
+    out += L"ShowTrayIcon=";
+    out += s->showTrayIcon ? L"1" : L"0";
+    out += L"\r\n\r\n[Overlay]\r\n";
+
+    out += L"FontFamily=";
+    out += s->fontFamily;
+    out += L"\r\nDownloadPrefix=";
+    out += EncodePrefix(s->downPrefix);
+    out += L"\r\nUploadPrefix=";
+    out += EncodePrefix(s->upPrefix);
+
     swprintf_s(num, L"%.1f", s->fontSize);
-    WritePrivateProfileStringW(L"Overlay", L"FontSize", num, filePath);
+    out += L"\r\nFontSize=";
+    out += num;
     swprintf_s(num, L"%d", s->fontStyle);
-    WritePrivateProfileStringW(L"Overlay", L"FontStyle", num, filePath);
-    WritePrivateProfileStringW(L"Overlay", L"ShowWidget", s->showWidget ? L"1" : L"0", filePath);
-    WritePrivateProfileStringW(L"General", L"ShowTrayIcon", s->showTrayIcon ? L"1" : L"0", filePath);
+    out += L"\r\nFontStyle=";
+    out += num;
+    out += L"\r\nShowWidget=";
+    out += s->showWidget ? L"1" : L"0";
     swprintf_s(num, L"%d", ClampTaskbarMeterOffset(s->taskbarOffset));
-    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", num, filePath);
+    out += L"\r\nTaskbarOffset=";
+    out += num;
 
     const wchar_t* minimumUnit = L"Auto";
     if (s->minimumSpeedUnit == MinimumSpeedUnit::Kilobytes) minimumUnit = L"KB/s";
     else if (s->minimumSpeedUnit == MinimumSpeedUnit::Megabytes) minimumUnit = L"MB/s";
     else if (s->minimumSpeedUnit == MinimumSpeedUnit::Gigabytes) minimumUnit = L"GB/s";
-    WritePrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", minimumUnit, filePath);
+    out += L"\r\nMinimumSpeedUnit=";
+    out += minimumUnit;
     swprintf_s(num, L"%d", ClampSpeedDecimalPlaces(s->decimalPlaces));
-    WritePrivateProfileStringW(L"Overlay", L"DecimalPlaces", num, filePath);
+    out += L"\r\nDecimalPlaces=";
+    out += num;
 
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
-    WritePrivateProfileStringW(L"Overlay", L"DownloadColor", num, filePath);
+    out += L"\r\nDownloadColor=";
+    out += num;
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->up));
-    WritePrivateProfileStringW(L"Overlay", L"UploadColor", num, filePath);
+    out += L"\r\nUploadColor=";
+    out += num;
 
+    out += L"\r\n\r\n[Totals]\r\n";
     swprintf_s(num, L"%llu", static_cast<unsigned long long>(s->lifetimeDownloaded));
-    WritePrivateProfileStringW(L"Totals", L"Downloaded", num, filePath);
+    out += L"Downloaded=";
+    out += num;
     swprintf_s(num, L"%llu", static_cast<unsigned long long>(s->lifetimeUploaded));
-    WritePrivateProfileStringW(L"Totals", L"Uploaded", num, filePath);
+    out += L"\r\nUploaded=";
+    out += num;
+
     wchar_t since[11] = {};
     if (ParseIsoDate(s->lifetimeSince, nullptr)) {
         wcscpy_s(since, s->lifetimeSince);
     } else {
         SetToday(since, _countof(since));
     }
-    WritePrivateProfileStringW(L"Totals", L"Since", since, filePath);
+    out += L"\r\nSince=";
+    out += since;
+    out += L"\r\n";
+    return out;
+}
+
+// Writes to a sibling temp file, flushes it, then swaps it into place, so an
+// interrupted save can never leave a half-written settings file behind.
+static bool WriteFileAtomic(const std::wstring& path, const std::wstring& text) {
+    const std::wstring tempPath = path + L".tmp";
+    HANDLE file = CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    bool ok = true;
+    const wchar_t bom = 0xFEFF;
+    DWORD written = 0;
+    if (!WriteFile(file, &bom, sizeof(bom), &written, nullptr) || written != sizeof(bom)) {
+        ok = false;
+    }
+    if (ok && !text.empty()) {
+        const DWORD bytes = static_cast<DWORD>(text.size() * sizeof(wchar_t));
+        if (!WriteFile(file, text.data(), bytes, &written, nullptr) || written != bytes) {
+            ok = false;
+        }
+    }
+    if (ok && !FlushFileBuffers(file)) ok = false;
+    CloseHandle(file);
+
+    if (ok && !MoveFileExW(tempPath.c_str(), path.c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ok = false;
+    }
+    if (!ok) DeleteFileW(tempPath.c_str());
+    return ok;
+}
+
+bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
+    if (!s || !filePath) return false;
+
+    std::wstring path(filePath);
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        std::wstring directory = path.substr(0, slash);
+        if (!directory.empty() && !CreateDirectoryW(directory.c_str(), nullptr) &&
+            GetLastError() != ERROR_ALREADY_EXISTS) {
+            return false;
+        }
+    }
+
+    return WriteFileAtomic(path, BuildSettingsIni(s));
 }
 
 void LoadSettings(AppSettings* s) {
@@ -227,9 +294,9 @@ void LoadSettings(AppSettings* s) {
     s->startWithWindows = IsStartWithWindowsEnabled() ? 1 : 0;
 }
 
-void SaveSettings(const AppSettings* s) {
+bool SaveSettings(const AppSettings* s) {
     std::wstring path = GetDefaultSettingsPath();
-    SaveSettingsCustom(s, path.c_str());
+    return SaveSettingsCustom(s, path.c_str());
 }
 
 void GetSettingsPath(wchar_t* buf, size_t maxLen) {
