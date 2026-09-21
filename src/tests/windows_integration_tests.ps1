@@ -200,6 +200,32 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
+# Live meter edits update the UI immediately but their settings write is
+# debounced, so persistence assertions poll instead of reading once.
+function Wait-IniString([string]$Section, [string]$Key, [string]$Expected, [int]$TimeoutMs = 6000) {
+    $buffer = New-Object Text.StringBuilder 256
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        [void]$buffer.Clear()
+        [void][WinNetMeterNative]::GetPrivateProfileStringW($Section, $Key, '', $buffer, $buffer.Capacity, $settingsPath)
+        if ($buffer.ToString() -eq $Expected) { return $true }
+        Start-Sleep -Milliseconds 100
+    } while ([Environment]::TickCount -lt $deadline)
+    Write-Host "  Wait-IniString($Section/$Key) timed out; last value '$buffer', expected '$Expected'"
+    return $false
+}
+
+function Wait-IniInt([string]$Section, [string]$Key, [int]$Expected, [int]$TimeoutMs = 6000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        $actual = [WinNetMeterNative]::GetPrivateProfileIntW($Section, $Key, [int]::MinValue, $settingsPath)
+        if ($actual -eq $Expected) { return $true }
+        Start-Sleep -Milliseconds 100
+    } while ([Environment]::TickCount -lt $deadline)
+    Write-Host "  Wait-IniInt($Section/$Key) timed out; last value '$actual', expected '$Expected'"
+    return $false
+}
+
 function Get-RunningAppProcesses {
     @(Get-Process -Name WinNetMeter -ErrorAction SilentlyContinue | Where-Object {
         try { $_.Path -eq $exePath } catch { $false }
@@ -671,28 +697,22 @@ try {
             [void][WinNetMeterNative]::GetWindowRect($overlay.Handle, [ref]$overlayBefore)
             Assert-True ([WinNetMeterNative]::SendMessageStringW($downPrefix, 0x000C, [IntPtr]::Zero, 'DL:') -ne [IntPtr]::Zero) 'Could not edit download prefix'
             Assert-True ([WinNetMeterNative]::SendMessageStringW($upPrefix, 0x000C, [IntPtr]::Zero, 'UL:') -ne [IntPtr]::Zero) 'Could not edit upload prefix'
-            [void]$iniValue.Clear()
-            [void][WinNetMeterNative]::GetPrivateProfileStringW('Overlay', 'DownloadPrefix', '', $iniValue, $iniValue.Capacity, $settingsPath)
-            Assert-True ($iniValue.ToString() -eq 'x0044004C003A') 'Download prefix did not update live'
-            [void]$iniValue.Clear()
-            [void][WinNetMeterNative]::GetPrivateProfileStringW('Overlay', 'UploadPrefix', 'missing', $iniValue, $iniValue.Capacity, $settingsPath)
-            Assert-True ($iniValue.ToString() -eq 'x0055004C003A') 'Upload prefix did not update live'
+            Assert-True (Wait-IniString 'Overlay' 'DownloadPrefix' 'x0044004C003A') 'Download prefix was not persisted'
+            Assert-True (Wait-IniString 'Overlay' 'UploadPrefix' 'x0055004C003A') 'Upload prefix was not persisted'
             Assert-True ([WinNetMeterNative]::SendMessageStringW($offsetEdit, 0x000C, [IntPtr]::Zero, '80') -ne [IntPtr]::Zero) 'Could not edit meter offset'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'TaskbarOffset', -1, $settingsPath) -eq 80) 'Taskbar offset did not save live'
+            Assert-True (Wait-IniInt 'Overlay' 'TaskbarOffset' 80) 'Taskbar offset was not persisted'
             $overlayAfter = New-Object WinNetMeterNative+RECT
             [void][WinNetMeterNative]::GetWindowRect($overlay.Handle, [ref]$overlayAfter)
             Assert-True ($overlayBefore.Left -ne $overlayAfter.Left -or $overlayBefore.Top -ne $overlayAfter.Top) 'Taskbar meter did not move live'
 
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2016, [IntPtr]::Zero)
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'TaskbarOffset', -1, $settingsPath) -eq 0) 'Meter reset did not reset offset'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'DownloadColor', 0, $settingsPath) -eq 16777215) 'Meter reset did not reset download color'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'UploadColor', 0, $settingsPath) -eq 16777215) 'Meter reset did not reset upload color'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'FontStyle', -1, $settingsPath) -eq 1) 'Meter reset did not reset font style'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Overlay', 'DecimalPlaces', -1, $settingsPath) -eq 2) 'Meter reset did not reset decimal places'
+            Assert-True (Wait-IniInt 'Overlay' 'TaskbarOffset' 0) 'Meter reset did not reset offset'
+            Assert-True (Wait-IniInt 'Overlay' 'DownloadColor' 16777215) 'Meter reset did not reset download color'
+            Assert-True (Wait-IniInt 'Overlay' 'UploadColor' 16777215) 'Meter reset did not reset upload color'
+            Assert-True (Wait-IniInt 'Overlay' 'FontStyle' 1) 'Meter reset did not reset font style'
+            Assert-True (Wait-IniInt 'Overlay' 'DecimalPlaces' 2) 'Meter reset did not reset decimal places'
             foreach ($item in @(@('DownloadPrefix', 'x2193'), @('UploadPrefix', 'x2191'), @('FontFamily', 'Segoe UI'), @('FontSize', '8.0'), @('MinimumSpeedUnit', 'Auto'))) {
-                [void]$iniValue.Clear()
-                [void][WinNetMeterNative]::GetPrivateProfileStringW('Overlay', $item[0], 'missing', $iniValue, $iniValue.Capacity, $settingsPath)
-                Assert-True ($iniValue.ToString() -eq $item[1]) "Meter reset did not reset $($item[0]): $iniValue"
+                Assert-True (Wait-IniString 'Overlay' $item[0] $item[1]) "Meter reset did not reset $($item[0])"
             }
             Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Totals', 'Downloaded', 0, $settingsPath) -eq 8388608) 'Meter reset changed persistent totals'
 

@@ -20,6 +20,7 @@
 // Window message constants & IDs
 enum {
     ID_TIMER = 1,
+    ID_SETTINGS_SAVE_TIMER = 2,
     WM_TRAYICON = WM_APP + 1,
     WM_OVERLAY_REFRESH = WM_APP + 2,
     WM_OVERLAY_ENSURE_TOPMOST = WM_APP + 3,
@@ -78,6 +79,10 @@ enum {
     ID_SET_UP_PREFIX_EDIT = 2028,
 };
 
+// Long enough to swallow a burst of keystrokes, short enough that a settings
+// change is on disk well before a normal exit.
+static constexpr UINT SETTINGS_SAVE_DEBOUNCE_MS = 750;
+
 static const wchar_t MAIN_WINDOW_CLASS[] = L"WinNetMeterMain";
 static const wchar_t TEST_WINDOW_CLASS[] = L"WinNetMeterMainTest";
 static const wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.SingleInstance";
@@ -125,7 +130,6 @@ struct SettingsUiState {
     HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
     HWND hwndCheckWidget = nullptr, hwndCheckTray = nullptr, hwndCheckStartup = nullptr;
     HWND hwndBtnApply = nullptr, hwndBtnExit = nullptr;
-    int dpi = 96;
     bool refreshing = false;
 };
 
@@ -134,7 +138,6 @@ static SettingsUiState g_settingsUi;
 // Fonts & Brushes
 static HFONT g_fontLabel = nullptr;
 static HFONT g_fontValue = nullptr;
-static HFONT g_fontCombo = nullptr;
 static HFONT g_fontAuthor = nullptr;
 static HFONT g_fontOverlay = nullptr;
 
@@ -159,6 +162,8 @@ static ULONGLONG g_currentDownBps = 0;
 static ULONGLONG g_currentUpBps = 0;
 static ULONGLONG g_lastTotalsSaveTick = 0;
 static bool g_totalsDirty = false;
+static bool g_settingsSaveFailed = false;
+static bool g_settingsSavePending = false;
 
 // Forward declarations
 static void ShowMainWindow();
@@ -176,6 +181,44 @@ static void UpdateTotalValues();
 
 static int ScaleDpi(int val, int dpi) {
     return MulDiv(val, dpi, 96);
+}
+
+// Writes the settings file now, cancelling any debounced save, and remembers a
+// failure so it can be reported the next time the window is opened.
+static bool PersistSettingsNow() {
+    if (g_hwndMain) KillTimer(g_hwndMain, ID_SETTINGS_SAVE_TIMER);
+    g_settingsSavePending = false;
+    if (SaveSettings(&g_settings)) {
+        g_settingsSaveFailed = false;
+        return true;
+    }
+    g_settingsSaveFailed = true;
+    return false;
+}
+
+// Live meter edits arrive one per keystroke (and faster from spinner
+// auto-repeat). Coalesce them so typing costs one file write, not one per
+// character, and keeps the UI thread off the disk.
+static void SchedulePersistSettings() {
+    if (!g_hwndMain) {
+        PersistSettingsNow();
+        return;
+    }
+    g_settingsSavePending = true;
+    SetTimer(g_hwndMain, ID_SETTINGS_SAVE_TIMER, SETTINGS_SAVE_DEBOUNCE_MS, nullptr);
+}
+
+static void ReportSettingsSaveFailure(HWND hwnd) {
+    wchar_t path[MAX_PATH] = {};
+    GetSettingsPath(path, _countof(path));
+    wchar_t message[MAX_PATH + 192] = {};
+    _snwprintf_s(message, _countof(message), _TRUNCATE,
+                 L"Settings could not be saved to:\n\n%s\n\n"
+                 L"Check that the file is not read-only and that the drive has free space. "
+                 L"Your changes stay active for this session only.",
+                 path);
+    MessageBoxW(hwnd, message, L"WinNetMeter", MB_OK | MB_ICONERROR);
+    g_settingsSaveFailed = false; // reported; only warn again after a new failure
 }
 
 static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi,
@@ -208,7 +251,6 @@ static HFONT GetOverlayFont(int dpi) {
 }
 
 static void RelayoutMainControls(int dpi) {
-    g_settingsUi.dpi = dpi;
     struct ItemPos {
         HWND hwnd;
         int x, y, w, h;
@@ -271,20 +313,18 @@ static void RelayoutMainControls(int dpi) {
 static void RefreshFontsAndRelayout(int dpi) {
     HFONT oldFontLabel = g_fontLabel;
     HFONT oldFontValue = g_fontValue;
-    HFONT oldFontCombo = g_fontCombo;
     HFONT oldFontAuthor = g_fontAuthor;
     HFONT oldFontOverlay = g_fontOverlay;
 
     g_currentDpi = dpi;
     g_fontLabel = MakeFont(L"Segoe UI", 9.0, 0, dpi);
     g_fontValue = MakeFont(L"Segoe UI", 10.0, 1, dpi);
-    g_fontCombo = MakeFont(L"Segoe UI", 9.0, 0, dpi);
     g_fontAuthor = MakeFont(L"Segoe UI", 8.0, 2, dpi);
     g_fontOverlay = nullptr;
     g_overlayFontDpi = 0;
 
     if (g_hwndIfaceLbl)   SendMessageW(g_hwndIfaceLbl, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
-    if (g_combo)          SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontCombo), TRUE);
+    if (g_combo)          SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_hwndDownTitle)  SendMessageW(g_hwndDownTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
     if (g_hwndSpeedDown)  SendMessageW(g_hwndSpeedDown, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
     if (g_hwndUpTitle)    SendMessageW(g_hwndUpTitle, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontValue), TRUE);
@@ -324,7 +364,6 @@ static void RefreshFontsAndRelayout(int dpi) {
 
     if (oldFontLabel)   DeleteObject(oldFontLabel);
     if (oldFontValue)   DeleteObject(oldFontValue);
-    if (oldFontCombo)   DeleteObject(oldFontCombo);
     if (oldFontAuthor)  DeleteObject(oldFontAuthor);
     if (oldFontOverlay) DeleteObject(oldFontOverlay);
 
@@ -830,9 +869,10 @@ static void OnTimerTick() {
         if (downloaded || uploaded) g_totalsDirty = true;
         if (g_totalsDirty && now - g_lastTotalsSaveTick >= 60000) {
             // ponytail: abnormal termination can lose at most 60 seconds; add a journal only if exact crash durability matters.
-            SaveSettings(&g_settings);
+            // Stay dirty when the write fails so the next window retries instead
+            // of silently dropping the accumulated totals.
+            if (PersistSettingsNow()) g_totalsDirty = false;
             g_lastTotalsSaveTick = now;
-            g_totalsDirty = false;
         }
     } else {
         // Sampling failed (adapter disconnected/disabled): rate-limited refresh at most every 3s
@@ -929,6 +969,8 @@ static void ShowMainWindow() {
         if (!IsWindowVisible(g_hwndMain)) RefreshSettingsControls();
         ShowWindow(g_hwndMain, IsIconic(g_hwndMain) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(g_hwndMain);
+        // Surface a background save failure once the user is actually looking.
+        if (g_settingsSaveFailed) ReportSettingsSaveFailure(g_hwndMain);
     }
 }
 
@@ -1094,7 +1136,10 @@ static void RefreshSettingsControls() {
     state.refreshing = false;
 }
 
-static void ApplyLiveMeterSettings(bool fontChanged = false) {
+// persistImmediately=false is for edit-box changes, which arrive one per
+// keystroke; one-shot actions (buttons, combo selections) still write at once
+// so the file always matches the UI the moment the user stops interacting.
+static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmediately = true) {
     SettingsUiState& state = g_settingsUi;
     g_settings.down = state.tempSettings.down;
     g_settings.up = state.tempSettings.up;
@@ -1106,7 +1151,11 @@ static void ApplyLiveMeterSettings(bool fontChanged = false) {
     g_settings.taskbarOffset = state.tempSettings.taskbarOffset;
     g_settings.minimumSpeedUnit = state.tempSettings.minimumSpeedUnit;
     g_settings.decimalPlaces = state.tempSettings.decimalPlaces;
-    SaveSettings(&g_settings);
+    if (persistImmediately) {
+        PersistSettingsNow();
+    } else {
+        SchedulePersistSettings();
+    }
     UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
     if (fontChanged) RefreshFontsAndRelayout(g_currentDpi);
     UpdateTrayIcon();
@@ -1155,13 +1204,18 @@ static bool ApplySettings(HWND hwnd) {
     wcscpy_s(state.tempSettings.lifetimeSince, _countof(state.tempSettings.lifetimeSince),
              g_settings.lifetimeSince);
     g_settings = state.tempSettings;
-    SaveSettings(&g_settings);
+    const bool saved = PersistSettingsNow();
     UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
     RefreshFontsAndRelayout(g_currentDpi);
     SetupTrayIcon();
     CreateOrUpdateOverlay();
     InvalidateRect(g_hwndMain, nullptr, TRUE);
     RefreshSettingsControls();
+    if (!saved) {
+        // Apply is an explicit user action, so report the failure immediately.
+        ReportSettingsSaveFailure(hwnd);
+        return false;
+    }
     return true;
 }
 
@@ -1173,7 +1227,7 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
                        _countof(state.tempSettings.downPrefix));
         GetWindowTextW(state.hwndEditUpPrefix, state.tempSettings.upPrefix,
                        _countof(state.tempSettings.upPrefix));
-        ApplyLiveMeterSettings();
+        ApplyLiveMeterSettings(false, false);
     } else if (id == ID_SET_OFFSET_EDIT && code == EN_CHANGE) {
         if (state.refreshing) return true;
         wchar_t text[32] = {};
@@ -1181,20 +1235,10 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
         int offset = 0;
         if (ParseTaskbarMeterOffset(text, &offset)) {
             state.tempSettings.taskbarOffset = offset;
-            ApplyLiveMeterSettings();
+            ApplyLiveMeterSettings(false, false);
         }
     } else if (id == ID_SET_OFFSET_RESET) {
-        AppSettings defaults;
-        state.tempSettings.down = defaults.down;
-        state.tempSettings.up = defaults.up;
-        wcscpy_s(state.tempSettings.downPrefix, _countof(state.tempSettings.downPrefix), defaults.downPrefix);
-        wcscpy_s(state.tempSettings.upPrefix, _countof(state.tempSettings.upPrefix), defaults.upPrefix);
-        wcscpy_s(state.tempSettings.fontFamily, _countof(state.tempSettings.fontFamily), defaults.fontFamily);
-        state.tempSettings.fontSize = defaults.fontSize;
-        state.tempSettings.fontStyle = defaults.fontStyle;
-        state.tempSettings.taskbarOffset = defaults.taskbarOffset;
-        state.tempSettings.minimumSpeedUnit = defaults.minimumSpeedUnit;
-        state.tempSettings.decimalPlaces = defaults.decimalPlaces;
+        state.tempSettings = AppSettings();
         ApplyLiveMeterSettings(true);
         RefreshSettingsControls();
     } else if (id == ID_SET_UNIT_COMBO && code == CBN_SELCHANGE) {
@@ -1216,7 +1260,7 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
         state.tempSettings.up = PickColor(hwnd, state.tempSettings.up);
         ApplyLiveMeterSettings();
     } else if (id == ID_SET_FONT_BTN) {
-        PickFont(hwnd, &state.tempSettings, state.dpi);
+        PickFont(hwnd, &state.tempSettings, g_currentDpi);
         ApplyLiveMeterSettings(true);
     } else if (id == ID_SET_SAVE_BTN) {
         ApplySettings(hwnd);
@@ -1225,10 +1269,11 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
                         L"Reset the saved download and upload totals?\n\nThis cannot be undone.",
                         L"Reset total data", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
             ResetLifetimeTotals(&g_settings);
-            SaveSettings(&g_settings);
+            const bool saved = PersistSettingsNow();
             g_lastTotalsSaveTick = GetTickCount64();
-            g_totalsDirty = false;
+            g_totalsDirty = !saved;
             UpdateTotalValues();
+            if (!saved) ReportSettingsSaveFailure(hwnd);
         }
     } else if (id == ID_EXIT_APP) {
         DestroyWindow(hwnd);
@@ -1325,6 +1370,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == ID_TIMER) {
             OnTimerTick();
+        } else if (wp == ID_SETTINGS_SAVE_TIMER) {
+            PersistSettingsNow();
         }
         return 0;
     case WM_OVERLAY_ENSURE_TOPMOST:
@@ -1368,7 +1415,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ShowMainWindow();
             } else if (cmd == ID_TRAY_TOGGLE_WIDGET) {
                 g_settings.showWidget = !g_settings.showWidget;
-                SaveSettings(&g_settings);
+                PersistSettingsNow();
                 CreateOrUpdateOverlay();
                 if (IsWindowVisible(hwnd)) RefreshSettingsControls();
             } else if (cmd == ID_TRAY_EXIT) {
@@ -1390,6 +1437,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
+        // Don't leave a debounced edit unwritten while the window is away.
+        if (g_settingsSavePending) PersistSettingsNow();
         return 0;
     case WM_SIZE:
         if (wp == SIZE_MINIMIZED) {
@@ -1398,7 +1447,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);
-        SaveSettings(&g_settings);
+        // Flush any debounced edit before the process goes away.
+        PersistSettingsNow();
         RemoveTrayIcon();
         if (g_hwndOverlay) {
             DestroyWindow(g_hwndOverlay);
@@ -1494,7 +1544,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR commandLine, int) {
     // Cleanup resources
     if (g_fontLabel) DeleteObject(g_fontLabel);
     if (g_fontValue) DeleteObject(g_fontValue);
-    if (g_fontCombo) DeleteObject(g_fontCombo);
     if (g_fontAuthor) DeleteObject(g_fontAuthor);
     if (g_fontOverlay) DeleteObject(g_fontOverlay);
     ReleaseMutex(singleInstance);
