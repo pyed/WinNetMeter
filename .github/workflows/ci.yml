@@ -57,10 +57,8 @@ jobs:
     name: Behavioral Integration Checks (x64 Windows)
     runs-on: windows-latest
     needs: build
-    # These drive a real window, taskbar and Explorer on the runner. They are
-    # reported but not yet gating while their stability on hosted runners is
-    # established; flip to blocking once they have a clean run history.
-    continue-on-error: true
+    # These drive a real window, taskbar and Explorer on the runner. All 12
+    # passed on windows-latest in run 35670075116, so they gate the build.
 
     steps:
       - name: Checkout repository
