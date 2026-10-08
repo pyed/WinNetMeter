@@ -128,6 +128,50 @@ public static class WinNetMeterNative
     public static extern uint GetBestInterface(uint destination, out uint index);
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr ExitStatus, PebBaseAddress, AffinityMask, BasePriority, UniqueProcessId, InheritedFrom;
+    }
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(IntPtr process, int infoClass,
+        ref PROCESS_BASIC_INFORMATION info, int size, out int returned);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(IntPtr dc);
+
+    // GDI handles of a process by object type (4 = region, 5 = bitmap, 10 = font, ...),
+    // read from the session-wide GDI handle table mapped into every GUI process
+    // (PEB->GdiSharedHandleTable at 0xF8 on x64; 24-byte cells: owner pid at 8,
+    // type at 14). Returns null if the table is unavailable.
+    public static Dictionary<int, int> GdiCounts(uint pid)
+    {
+        IntPtr dc = CreateCompatibleDC(IntPtr.Zero);   // ensures the table is mapped here
+        try {
+            var info = new PROCESS_BASIC_INFORMATION();
+            int returned;
+            if (NtQueryInformationProcess(GetCurrentProcess(), 0, ref info, Marshal.SizeOf(info), out returned) != 0) return null;
+            IntPtr table = Marshal.ReadIntPtr(info.PebBaseAddress, 0xF8);
+            if (table == IntPtr.Zero) return null;
+            var counts = new Dictionary<int, int>();
+            for (int i = 0; i < 65536; ++i) {
+                IntPtr cell = IntPtr.Add(table, i * 24);
+                if ((ushort)Marshal.ReadInt16(cell, 8) != (ushort)pid) continue;
+                int type = Marshal.ReadInt16(cell, 14) & 0x7F;
+                if (type == 0) continue;
+                int current;
+                counts.TryGetValue(type, out current);
+                counts[type] = current + 1;
+            }
+            return counts;
+        } finally {
+            if (dc != IntPtr.Zero) DeleteDC(dc);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct SYSTEMTIME
     {
         public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds;
@@ -336,6 +380,17 @@ function Stop-TestApp($Session) {
     }
 }
 
+# The meter runs on its own thread and posts a double-click to the UI thread,
+# so the window opens asynchronously; wait for it instead of reading once.
+function Wait-WindowVisible($Session, [string]$ClassName, [bool]$Visible = $true, [int]$TimeoutMs = 3000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        if ((Get-AppWindow $Session $ClassName).Visible -eq $Visible) { return $true }
+        Start-Sleep -Milliseconds 25
+    } while ([Environment]::TickCount -lt $deadline)
+    return $false
+}
+
 function Get-IniString([string]$Section, [string]$Key) {
     $buffer = New-Object Text.StringBuilder 1024
     [void][WinNetMeterNative]::GetPrivateProfileStringW($Section, $Key, '', $buffer, $buffer.Capacity, $settingsPath)
@@ -521,8 +576,8 @@ try {
             })
             Assert-True ($altTabCandidates.Count -eq 0) 'A resting top-level window remains eligible for Alt+Tab'
             [void][WinNetMeterNative]::SendMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True (Wait-WindowVisible $session $mainClass) 'Taskbar-meter activation did not show the unified window'
             $shownMain = Get-AppWindow $session $mainClass
-            Assert-True $shownMain.Visible 'Taskbar-meter activation did not show the unified window'
             Assert-True (($shownMain.ExStyle -band $toolWindow) -eq 0) 'Unified window is not a regular application window'
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
             $hiddenMain = Get-AppWindow $session $mainClass
@@ -720,17 +775,31 @@ try {
         }
         'ResourceLeak' {
             $main = Get-AppWindow $session $mainClass
-            1..10 | ForEach-Object { [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0113, [IntPtr]1, [IntPtr]::Zero) }
-            $session.Process.Refresh()
-            $gdiBefore = [WinNetMeterNative]::GetGuiResources($session.Process.Handle, 0)
-            $userBefore = [WinNetMeterNative]::GetGuiResources($session.Process.Handle, 1)
-            1..200 | ForEach-Object { [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0113, [IntPtr]1, [IntPtr]::Zero) }
-            $session.Process.Refresh()
-            $gdiAfter = [WinNetMeterNative]::GetGuiResources($session.Process.Handle, 0)
-            $userAfter = [WinNetMeterNative]::GetGuiResources($session.Process.Handle, 1)
-            Assert-True ($gdiAfter -eq $gdiBefore) "GDI objects changed: $gdiBefore -> $gdiAfter"
+            # A leak grows with the amount of work; a cache plateaus. Measured in 0.2.0
+            # (M8): when the UI thread's tray update overlaps the meter thread's
+            # layered-window update, the window manager caches an extra GDI region or
+            # DC for the process (5000 ticks plateau at +1; never with the tray icon
+            # off). So after a warm-up round, 600 more ticks must leave USER objects
+            # (windows, icons, menus) exactly unchanged and GDI objects within 3,
+            # which still catches any leak of one object per 150 ticks or faster.
+            $process = $session.Process
+            $round = {
+                1..200 | ForEach-Object { [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0113, [IntPtr]1, [IntPtr]::Zero) }
+                Start-Sleep -Milliseconds 400   # the meter thread renders asynchronously
+            }
+            & $round
+            $gdiBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
+            $userBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
+            $typesBefore = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
+            1..3 | ForEach-Object { & $round }
+            $gdiAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
+            $userAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
+            $typesAfter = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
+            $describe = { param($types) if ($null -eq $types) { 'n/a' } else { ($types.Keys | Sort-Object | ForEach-Object { '0x{0:X2}={1}' -f $_, $types[$_] }) -join ' ' } }
             Assert-True ($userAfter -eq $userBefore) "User objects changed: $userBefore -> $userAfter"
-            "RESOURCE_COUNTS GDI=$gdiBefore->$gdiAfter USER=$userBefore->$userAfter"
+            Assert-True (($gdiAfter - $gdiBefore) -le 3) ("GDI objects grew {0} -> {1} over 600 ticks; by type before [{2}] after [{3}]" -f
+                $gdiBefore, $gdiAfter, (& $describe $typesBefore), (& $describe $typesAfter))
+            "RESOURCE_COUNTS GDI=$gdiBefore->$gdiAfter USER=$userBefore->$userAfter over 600 ticks"
             'RESOURCE_LIFETIME_OK'
         }
         'FormattingDisplay' {
@@ -843,7 +912,7 @@ try {
             }
 
             [void][WinNetMeterNative]::SendMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
-            Assert-True (Get-AppWindow $session $mainClass).Visible 'Meter double-click did not open the unified window'
+            Assert-True (Wait-WindowVisible $session $mainClass) 'Meter double-click did not open the unified window'
 
             $about = New-Object Text.StringBuilder 128
             [void][WinNetMeterNative]::GetWindowTextW(
@@ -868,7 +937,7 @@ try {
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
             Assert-True (-not (Get-AppWindow $session $mainClass).Visible) 'Closing did not hide the unified window'
             [void][WinNetMeterNative]::SendMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
-            Assert-True (Get-AppWindow $session $mainClass).Visible 'Meter could not reopen the app after hiding the tray icon'
+            Assert-True (Wait-WindowVisible $session $mainClass) 'Meter could not reopen the app after hiding the tray icon'
 
             [void][WinNetMeterNative]::SendMessageW($startup, 0x00F1, [IntPtr]::Zero, [IntPtr]::Zero)
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2005, [IntPtr]::Zero)

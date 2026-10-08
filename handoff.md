@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M7** (DPI-sized tray icon).
+- Last completed milestone: **M8** (meter thread).
 
 ## 0.2.0 milestone plan
 
@@ -27,7 +27,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M5** Formatting: bits-per-second option; locale-aware "since" date.
 - [x] **M6** Theme-aware default meter colours, with a settings-version migration.
 - [x] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
-- [ ] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
+- [x] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
       hooks) to a dedicated thread fed by state snapshots. No behavior change.
 - [ ] **M9** Placement anchors (next to tray / after apps / left edge / legacy) with offsets
       relative to the anchor; legacy files keep their exact old position.
@@ -259,3 +259,37 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   across 1000 further icons (no leak), so the test now warms up first. Unit test stdout is
   unbuffered so diagnostics print before an `assert` aborts.
 - Verified: build clean; 52 unit tests; 19/19 integration checks; isolation guard clean.
+
+### M8: meter thread (2026-10-08)
+- New `src/meter.{h,cpp}` (in `build.bat`; not in the unit-test build). A dedicated thread
+  owns a message-only command window (`WinNetMeterMeterHost`), the `WinNetMeterOverlay`
+  window, both WinEvent hooks and the overlay font. The UI thread calls `UpdateMeter()`
+  (`main.cpp`), which posts a heap `MeterState` snapshot; the meter thread takes ownership,
+  coalesces queued snapshots, and renders. It never sends to the UI thread: a double-click
+  posts `WM_OPEN_FROM_METER`. `StartMeterHost` runs in `WM_CREATE`; `StopMeterHost` in
+  `WM_DESTROY` (waits up to 3 s; the meter thread never waits on the UI thread, so no
+  deadlock). Overlay logic was ported unchanged (fullscreen heuristic, auto-hide, hooks).
+- Renders are throttled on the leading edge to at most one per 33 ms; `RenderOverlay` no
+  longer uses `GetDC(NULL)` (memory DC + null destination DC for `UpdateLayeredWindow`) and
+  only passes `SWP_SHOWWINDOW` when the window is hidden.
+- Test contract changes (deliberate): `WindowStyles`/`Preferences` wait for the window to
+  appear after a meter double-click (`Wait-WindowVisible`), since it is now posted.
+  `ResourceLeak` was redesigned, see below.
+- **GDI investigation (keep this):** with the meter thread, a 200-tick burst left +1/+2 GDI
+  objects. Per-type counts (read from the GDI shared handle table, `GdiCounts` in the
+  harness) showed REGIONs, later also a DC. Facts: the 0.1.x/M7 single-threaded build stays
+  flat under the same burst; with the tray icon off the M8 build stays flat; at the real
+  1 Hz cadence it stays flat for 40 s; 5000 burst ticks plateau at +1; counts sometimes fall
+  back by themselves. Conclusion: window-manager caches (regions, cached DCs) that grow when
+  the UI thread's tray update overlaps the meter thread's layered-window update; bounded,
+  not a leak. The throttle cut the frequency sharply but cannot remove it.
+  `ResourceLeak` therefore runs a 200-tick warm-up, then 600 measured ticks, and asserts
+  USER objects exactly equal and GDI growth <= 3 (catches leaks of 1 per 150 ticks or
+  faster). Negative control: the same build with `DestroyIcon` removed from the tray update
+  fails with USER 264 -> 866.
+- Gotcha: **PowerShell passes `$null` to a .NET `string` parameter as `""`.**
+  `FindWindowW('Class', $null)` therefore searches for an *empty title* and silently misses
+  titled windows; two early probes sent all their ticks to a null window. Use
+  `[NullString]::Value`.
+- Verified: build clean; 52 unit tests; 19/19 integration checks; 8/8 `ResourceLeak` runs;
+  5/5 each for ForegroundZOrder, Fullscreen, WindowStyles, Preferences, ExplorerRecovery.

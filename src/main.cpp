@@ -14,7 +14,7 @@
 #include <cwchar>
 #include <string>
 #include "network.h"
-#include "overlay.h"
+#include "meter.h"
 #include "render.h"
 #include "settings.h"
 #include "version.h"
@@ -24,9 +24,7 @@ enum {
     ID_TIMER = 1,
     ID_SETTINGS_SAVE_TIMER = 2,
     WM_TRAYICON = WM_APP + 1,
-    WM_OVERLAY_REFRESH = WM_APP + 2,
-    WM_OVERLAY_ENSURE_TOPMOST = WM_APP + 3,
-    WM_CHECK_FULLSCREEN = WM_APP + 4,
+    WM_OPEN_FROM_METER = WM_APP + 2,   // posted by the meter thread on double-click
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -98,9 +96,6 @@ static const wchar_t TEST_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.IntegrationTes
 static HINSTANCE g_hInst = nullptr;
 static const wchar_t* g_mainWindowClass = MAIN_WINDOW_CLASS;
 static HWND g_hwndMain = nullptr;
-static HWND g_hwndOverlay = nullptr;
-static HWINEVENTHOOK g_foregroundHook = nullptr;
-static HWINEVENTHOOK g_locationHook = nullptr;
 
 // Main window child controls
 static HWND g_hwndIfaceLbl = nullptr;
@@ -146,7 +141,6 @@ static SettingsUiState g_settingsUi;
 static HFONT g_fontLabel = nullptr;
 static HFONT g_fontValue = nullptr;
 static HFONT g_fontAuthor = nullptr;
-static HFONT g_fontOverlay = nullptr;
 
 static HICON g_hCurrentTrayIcon = nullptr;
 
@@ -157,7 +151,6 @@ static NET_LUID g_selectedLuid = {};     // adapter being metered right now (0 =
 static NET_LUID g_comboLuids[64] = {};   // adapter behind combo item i + 1 (item 0 is Automatic)
 static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
-static int g_overlayFontDpi = 0;
 static bool g_taskbarLight = false;   // resolves METER_COLOR_AUTO; refreshed on theme change
 
 // Overlay speed strings
@@ -174,15 +167,12 @@ static bool g_settingsSavePending = false;
 
 // Forward declarations
 static void ShowMainWindow();
-static void CreateOrUpdateOverlay();
-static void PositionTaskbarOverlay();
-static void EnsureTaskbarOverlayTopmost();
+static void UpdateMeter();
 static void UpdateTrayIcon();
 static void SetupTrayIcon();
 static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
 static void PopulateAdapters();
-static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
 static void RefreshSettingsControls();
 static void UpdateTotalValues();
 
@@ -252,17 +242,22 @@ static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi,
                        DEFAULT_PITCH | FF_DONTCARE, family);
 }
 
-static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi) {
-    return MakeFont(s.fontFamily, s.fontSize, s.fontStyle, dpi, ANTIALIASED_QUALITY);
-}
-
-static HFONT GetOverlayFont(int dpi) {
-    if (!g_fontOverlay || g_overlayFontDpi != dpi) {
-        if (g_fontOverlay) DeleteObject(g_fontOverlay);
-        g_fontOverlay = CreateOverlayFontFromSettings(g_settings, dpi);
-        g_overlayFontDpi = dpi;
-    }
-    return g_fontOverlay;
+// Sends the meter thread everything it draws; it renders asynchronously.
+static void UpdateMeter() {
+    MeterState state;
+    state.show = g_settings.showWidget != 0;
+    wchar_t text[128] = {};
+    FormatPrefixedSpeed(g_settings.upPrefix, g_szUpSpeed, text, _countof(text));
+    state.upText = text;
+    FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, text, _countof(text));
+    state.downText = text;
+    state.upColor = ResolveMeterColor(g_settings.up, g_taskbarLight);
+    state.downColor = ResolveMeterColor(g_settings.down, g_taskbarLight);
+    state.fontFamily = g_settings.fontFamily;
+    state.fontSize = g_settings.fontSize;
+    state.fontStyle = g_settings.fontStyle;
+    state.taskbarOffset = g_settings.taskbarOffset;
+    PushMeterState(state);
 }
 
 static void RelayoutMainControls(int dpi) {
@@ -335,14 +330,11 @@ static void RefreshFontsAndRelayout(int dpi) {
     HFONT oldFontLabel = g_fontLabel;
     HFONT oldFontValue = g_fontValue;
     HFONT oldFontAuthor = g_fontAuthor;
-    HFONT oldFontOverlay = g_fontOverlay;
 
     g_currentDpi = dpi;
     g_fontLabel = MakeFont(L"Segoe UI", 9.0, 0, dpi);
     g_fontValue = MakeFont(L"Segoe UI", 10.0, 1, dpi);
     g_fontAuthor = MakeFont(L"Segoe UI", 8.0, 2, dpi);
-    g_fontOverlay = nullptr;
-    g_overlayFontDpi = 0;
 
     if (g_hwndIfaceLbl)   SendMessageW(g_hwndIfaceLbl, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
     if (g_combo)          SendMessageW(g_combo, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
@@ -387,7 +379,6 @@ static void RefreshFontsAndRelayout(int dpi) {
     if (oldFontLabel)   DeleteObject(oldFontLabel);
     if (oldFontValue)   DeleteObject(oldFontValue);
     if (oldFontAuthor)  DeleteObject(oldFontAuthor);
-    if (oldFontOverlay) DeleteObject(oldFontOverlay);
 
 }
 
@@ -489,320 +480,6 @@ static void RemoveTrayIcon() {
     if (g_hCurrentTrayIcon) {
         DestroyIcon(g_hCurrentTrayIcon);
         g_hCurrentTrayIcon = nullptr;
-    }
-}
-
-// ---- Taskbar Overlay Widget --------------------------------------------------
-static bool GetTaskbarPosition(RECT* rect, UINT* edge) {
-    APPBARDATA data = {};
-    data.cbSize = sizeof(data);
-    if (!SHAppBarMessage(ABM_GETTASKBARPOS, &data) || IsRectEmpty(&data.rc)) {
-        return false;
-    }
-    if (data.uEdge != ABE_LEFT && data.uEdge != ABE_TOP &&
-        data.uEdge != ABE_RIGHT && data.uEdge != ABE_BOTTOM) {
-        return false;
-    }
-    *rect = data.rc;
-    *edge = data.uEdge;
-    return true;
-}
-
-static bool IsTaskbarShown(const RECT& expected, UINT edge) {
-    APPBARDATA state = {};
-    state.cbSize = sizeof(state);
-    if ((SHAppBarMessage(ABM_GETSTATE, &state) & ABS_AUTOHIDE) == 0) {
-        return true;
-    }
-
-    APPBARDATA query = {};
-    query.cbSize = sizeof(query);
-    query.uEdge = edge;
-    HWND taskbar = reinterpret_cast<HWND>(SHAppBarMessage(ABM_GETAUTOHIDEBAR, &query));
-    RECT actual = {};
-    RECT visible = {};
-    if (!taskbar || !GetWindowRect(taskbar, &actual) || !IntersectRect(&visible, &actual, &expected)) {
-        return false;
-    }
-
-    int expectedThickness = (edge == ABE_TOP || edge == ABE_BOTTOM)
-        ? expected.bottom - expected.top
-        : expected.right - expected.left;
-    int visibleThickness = (edge == ABE_TOP || edge == ABE_BOTTOM)
-        ? visible.bottom - visible.top
-        : visible.right - visible.left;
-    return visibleThickness * 2 >= expectedThickness;
-}
-
-// ---- Fullscreen Detection ----------------------------------------------------
-static bool IsShellOrDesktopWindow(HWND hwnd) {
-    if (!hwnd) return false;
-    if (hwnd == GetDesktopWindow() || hwnd == GetShellWindow()) return true;
-
-    wchar_t cls[64] = {};
-    if (GetClassNameW(hwnd, cls, _countof(cls)) > 0) {
-        if (wcscmp(cls, L"Progman") == 0 ||
-            wcscmp(cls, L"WorkerW") == 0 ||
-            wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-            wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
-    // DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) returns the actual visible
-    // bounds, excluding invisible resize borders that GetWindowRect includes on Win10/11.
-    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out, sizeof(*out)))) {
-        return true;
-    }
-    return GetWindowRect(hwnd, out) != FALSE;
-}
-
-static bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
-    if (!targetMonitor) return false;
-
-    HWND fg = GetForegroundWindow();
-    if (!fg) return false;
-
-    // A hidden or minimized window is never fullscreen application content
-    if (!IsWindowVisible(fg)) return false;
-    if (IsIconic(fg) || (GetWindowLongPtrW(fg, GWL_STYLE) & WS_MINIMIZE) != 0) return false;
-
-    // Normalize to root window to avoid classifying child controls/tooltips/menus
-    HWND root = GetAncestor(fg, GA_ROOT);
-    if (root) fg = root;
-
-    // Don't classify our own windows or shell/desktop surfaces as fullscreen
-    if (fg == g_hwndOverlay || fg == g_hwndMain) return false;
-    if (IsShellOrDesktopWindow(fg)) return false;
-
-    // Check which monitor the foreground window is on
-    HMONITOR fgMonitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
-    if (!fgMonitor || fgMonitor != targetMonitor) return false;
-
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(fgMonitor, &mi)) return false;
-
-    RECT wndRect = {};
-    if (!GetVisibleWindowBounds(fg, &wndRect)) return false;
-
-    if (!IsWindowRectFullscreen(wndRect, mi.rcMonitor)) return false;
-
-    // Normal maximized window under taskbar auto-hide:
-    // Has WS_CAPTION and is zoomed (maximized), occupying rcWork.
-    // Genuine fullscreen apps (F11, games, video) remove WS_CAPTION or use WS_POPUP.
-    LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
-    if ((style & WS_CAPTION) == WS_CAPTION && (style & WS_MAXIMIZE) != 0) {
-        return false;
-    }
-
-    return true;
-}
-
-static bool ShouldShowTaskbarMeter(RECT* outTaskbar = nullptr, UINT* outEdge = nullptr) {
-    if (!g_settings.showWidget) return false;
-
-    RECT taskbar = {};
-    UINT edge = ABE_BOTTOM;
-    if (!GetTaskbarPosition(&taskbar, &edge)) return false;
-    if (!IsTaskbarShown(taskbar, edge)) return false;
-
-    HMONITOR taskbarMon = MonitorFromRect(&taskbar, MONITOR_DEFAULTTOPRIMARY);
-    if (IsForegroundFullscreenOnMonitor(taskbarMon)) return false;
-
-    if (outTaskbar) *outTaskbar = taskbar;
-    if (outEdge) *outEdge = edge;
-    return true;
-}
-
-static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    switch (msg) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        BeginPaint(hwnd, &ps);
-        EndPaint(hwnd, &ps);
-        PositionTaskbarOverlay();
-        return 0;
-    }
-    case WM_DPICHANGED:
-        PostMessageW(hwnd, WM_OVERLAY_REFRESH, 0, 0);
-        return 0;
-    case WM_OVERLAY_REFRESH:
-        PositionTaskbarOverlay();
-        return 0;
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-    case WM_LBUTTONDBLCLK:
-        ShowMainWindow();
-        return 0;
-    case WM_ERASEBKGND:
-        return 1;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-static void PositionTaskbarOverlay() {
-    if (!g_hwndOverlay) return;
-
-    RECT taskbar = {};
-    UINT edge = ABE_BOTTOM;
-    if (!ShouldShowTaskbarMeter(&taskbar, &edge)) {
-        if (IsWindowVisible(g_hwndOverlay)) {
-            ShowWindow(g_hwndOverlay, SW_HIDE);
-        }
-        return;
-    }
-
-    int dpi = static_cast<int>(GetDpiForWindow(g_hwndOverlay));
-    if (dpi == 0) dpi = g_currentDpi;
-    RECT target = CalculateTaskbarOverlayRect(taskbar, edge, static_cast<UINT>(dpi),
-                                              g_settings.taskbarOffset);
-    int width = target.right - target.left;
-    int height = target.bottom - target.top;
-    int stride = width * 4;
-
-    HDC screen = GetDC(nullptr);
-    if (!screen) return;
-    HDC memory = CreateCompatibleDC(screen);
-    if (!memory) {
-        ReleaseDC(nullptr, screen);
-        return;
-    }
-
-    BITMAPINFO bitmapInfo = {};
-    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmapInfo.bmiHeader.biWidth = width;
-    bitmapInfo.bmiHeader.biHeight = -height;
-    bitmapInfo.bmiHeader.biPlanes = 1;
-    bitmapInfo.bmiHeader.biBitCount = 32;
-    bitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-    void* bits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(screen, &bitmapInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!bitmap || !bits) {
-        if (bitmap) DeleteObject(bitmap);
-        DeleteDC(memory);
-        ReleaseDC(nullptr, screen);
-        return;
-    }
-
-    HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memory, bitmap));
-    memset(bits, 0, static_cast<size_t>(stride) * static_cast<size_t>(height));
-    HFONT font = GetOverlayFont(dpi);
-    HFONT oldFont = font ? static_cast<HFONT>(SelectObject(memory, font)) : nullptr;
-    SetBkMode(memory, TRANSPARENT);
-    SetTextColor(memory, RGB(255, 255, 255));
-
-    const int middle = height / 2;
-    int padding = ScaleDpi(4, dpi);
-    if (padding * 2 >= width) padding = 0;
-    wchar_t upText[128] = {};
-    wchar_t downText[128] = {};
-    FormatPrefixedSpeed(g_settings.upPrefix, g_szUpSpeed, upText, _countof(upText));
-    FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, downText, _countof(downText));
-    RECT upRect = { padding, 0, width - padding, middle };
-    RECT downRect = { padding, middle, width - padding, height };
-    const UINT textFlags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
-    DrawTextW(memory, upText, -1, &upRect, textFlags);
-    DrawTextW(memory, downText, -1, &downRect, textFlags);
-    GdiFlush();
-    ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, middle,
-                      ResolveMeterColor(g_settings.up, g_taskbarLight),
-                      ResolveMeterColor(g_settings.down, g_taskbarLight));
-
-    POINT destination = { target.left, target.top };
-    POINT source = { 0, 0 };
-    SIZE size = { width, height };
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    BOOL updated = UpdateLayeredWindow(g_hwndOverlay, screen, &destination, &size,
-                                       memory, &source, 0, &blend, ULW_ALPHA);
-
-    if (oldFont) SelectObject(memory, oldFont);
-    SelectObject(memory, oldBitmap);
-    DeleteObject(bitmap);
-    DeleteDC(memory);
-    ReleaseDC(nullptr, screen);
-
-    if (updated) {
-        SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    }
-}
-
-static void EnsureTaskbarOverlayTopmost() {
-    if (!g_hwndOverlay || !IsWindowVisible(g_hwndOverlay)) return;
-    if (!ShouldShowTaskbarMeter(nullptr, nullptr)) {
-        ShowWindow(g_hwndOverlay, SW_HIDE);
-        return;
-    }
-
-    SetWindowPos(g_hwndOverlay, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-}
-
-static void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
-                                         LONG, LONG, DWORD, DWORD) {
-    if (event == EVENT_SYSTEM_FOREGROUND && hwnd && g_hwndMain && hwnd != g_hwndOverlay) {
-        PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
-        PostMessageW(g_hwndMain, WM_OVERLAY_ENSURE_TOPMOST, 0, 0);
-    }
-}
-
-static void CALLBACK OnLocationChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
-                                       LONG idObject, LONG idChild, DWORD, DWORD) {
-    // Filter to top-level window moves only (not child controls, not caret, etc.)
-    if (event != EVENT_OBJECT_LOCATIONCHANGE) return;
-    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
-    if (!hwnd || !g_hwndMain || hwnd == g_hwndOverlay || hwnd == g_hwndMain) return;
-
-    // Only care about the foreground window's geometry changes
-    HWND fg = GetForegroundWindow();
-    if (!fg) return;
-    HWND root = GetAncestor(fg, GA_ROOT);
-    if (root) fg = root;
-    HWND hwndRoot = GetAncestor(hwnd, GA_ROOT);
-    if (hwndRoot) hwnd = hwndRoot;
-    if (hwnd != fg) return;
-
-    PostMessageW(g_hwndMain, WM_CHECK_FULLSCREEN, 0, 0);
-}
-
-static void CreateOrUpdateOverlay() {
-    if (!g_settings.showWidget) {
-        if (g_hwndOverlay) {
-            DestroyWindow(g_hwndOverlay);
-            g_hwndOverlay = nullptr;
-        }
-        return;
-    }
-
-    if (!g_hwndOverlay) {
-        RECT taskbar = {};
-        UINT edge = ABE_BOTTOM;
-        if (!GetTaskbarPosition(&taskbar, &edge)) return;
-
-        wchar_t cls[] = L"WinNetMeterOverlay";
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.style = CS_DBLCLKS;
-        wc.lpfnWndProc = OverlayWndProc;
-        wc.hInstance = g_hInst;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.lpszClassName = cls;
-        RegisterClassExW(&wc);
-
-        g_hwndOverlay = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-            cls, nullptr, WS_POPUP,
-            taskbar.left, taskbar.top, 1, 1,
-            nullptr, nullptr, g_hInst, nullptr);
-
-        if (g_hwndOverlay) {
-            PositionTaskbarOverlay();
-        }
-    } else {
-        PositionTaskbarOverlay();
     }
 }
 
@@ -939,7 +616,7 @@ static void OnTimerTick() {
     if (g_selectedLuid.Value == 0) {
         UpdateSpeedValues(0, 0);
         UpdateTrayIcon();
-        CreateOrUpdateOverlay();
+        UpdateMeter();
         return;
     }
 
@@ -969,7 +646,7 @@ static void OnTimerTick() {
     }
 
     UpdateTrayIcon();
-    CreateOrUpdateOverlay();
+    UpdateMeter();
 }
 
 static void OnComboSelectionChanged() {
@@ -994,7 +671,7 @@ static void OnComboSelectionChanged() {
         UpdateSpeedValues(0, 0);
         UpdateTotalValues();
         UpdateTrayIcon();
-        CreateOrUpdateOverlay();
+        UpdateMeter();
     }
 }
 
@@ -1225,7 +902,7 @@ static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmedia
     UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
     if (fontChanged) RefreshFontsAndRelayout(g_currentDpi);
     UpdateTrayIcon();
-    CreateOrUpdateOverlay();
+    UpdateMeter();
 }
 
 static bool ApplySettings(HWND hwnd) {
@@ -1282,7 +959,7 @@ static bool ApplySettings(HWND hwnd) {
     UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
     RefreshFontsAndRelayout(g_currentDpi);
     SetupTrayIcon();
-    CreateOrUpdateOverlay();
+    UpdateMeter();
     InvalidateRect(g_hwndMain, nullptr, TRUE);
     RefreshSettingsControls();
     if (!saved) {
@@ -1379,13 +1056,15 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_uTaskbarCreatedMsg && g_uTaskbarCreatedMsg != 0) {
         SetupTrayIcon();
-        CreateOrUpdateOverlay();
+        UpdateMeter();
         return 0;
     }
 
     switch (msg) {
     case WM_CREATE: {
         g_hwndMain = hwnd;
+        // Without the meter thread the app still runs, reachable from the tray.
+        StartMeterHost(hwnd, WM_OPEN_FROM_METER);
         UpdateSpeedValues(0, 0);
 
         auto mkLabel = [&](const wchar_t* text, int id, UINT ss) {
@@ -1433,7 +1112,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         SetTimer(hwnd, ID_TIMER, 1000, nullptr);
         SetupTrayIcon();
-        CreateOrUpdateOverlay();
+        UpdateMeter();
         return 0;
     }
     case WM_CTLCOLORSTATIC: {
@@ -1466,11 +1145,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             PersistSettingsNow();
         }
         return 0;
-    case WM_OVERLAY_ENSURE_TOPMOST:
-        EnsureTaskbarOverlayTopmost();
-        return 0;
-    case WM_CHECK_FULLSCREEN:
-        PositionTaskbarOverlay();
+    case WM_OPEN_FROM_METER:
+        ShowMainWindow();
         return 0;
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -1490,7 +1166,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_taskbarLight = IsSystemThemeLight();
             UpdateTrayIcon();
         }
-        CreateOrUpdateOverlay();
+        UpdateMeter();
         return 0;
     }
     case WM_TRAYICON: {
@@ -1514,7 +1190,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (cmd == ID_TRAY_TOGGLE_WIDGET) {
                 g_settings.showWidget = !g_settings.showWidget;
                 PersistSettingsNow();
-                CreateOrUpdateOverlay();
+                UpdateMeter();
                 if (IsWindowVisible(hwnd)) RefreshSettingsControls();
             } else if (cmd == ID_TRAY_EXIT) {
                 DestroyWindow(hwnd);
@@ -1530,7 +1206,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetWindowPos(hwnd, nullptr, prc->left, prc->top, prc->right - prc->left, prc->bottom - prc->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
         RefreshFontsAndRelayout(newDpi);
-        CreateOrUpdateOverlay();
+        UpdateMeter();
         return 0;
     }
     case WM_CLOSE:
@@ -1548,10 +1224,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Flush any debounced edit before the process goes away.
         PersistSettingsNow();
         RemoveTrayIcon();
-        if (g_hwndOverlay) {
-            DestroyWindow(g_hwndOverlay);
-            g_hwndOverlay = nullptr;
-        }
+        StopMeterHost();
         PostQuitMessage(0);
         return 0;
     }
@@ -1646,13 +1319,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-                                       nullptr, OnForegroundChanged, 0, 0,
-                                       WINEVENT_OUTOFCONTEXT);
-    g_locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
-                                     nullptr, OnLocationChanged, 0, 0,
-                                     WINEVENT_OUTOFCONTEXT);
-
     MSG msg = {};
     BOOL result = 0;
     while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0) {
@@ -1662,21 +1328,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         }
     }
     if (result == -1 && IsWindow(hwnd)) DestroyWindow(hwnd);
-
-    if (g_foregroundHook) {
-        UnhookWinEvent(g_foregroundHook);
-        g_foregroundHook = nullptr;
-    }
-    if (g_locationHook) {
-        UnhookWinEvent(g_locationHook);
-        g_locationHook = nullptr;
-    }
+    StopMeterHost();   // no-op after WM_DESTROY; covers a GetMessage failure
 
     // Cleanup resources
     if (g_fontLabel) DeleteObject(g_fontLabel);
     if (g_fontValue) DeleteObject(g_fontValue);
     if (g_fontAuthor) DeleteObject(g_fontAuthor);
-    if (g_fontOverlay) DeleteObject(g_fontOverlay);
     ReleaseMutex(singleInstance);
     CloseHandle(singleInstance);
 
