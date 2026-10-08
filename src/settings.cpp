@@ -4,7 +4,9 @@
 #include <cerrno>
 #include <cwchar>
 #include <climits>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 static const wchar_t RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -147,6 +149,33 @@ static void SetToday(wchar_t* out, size_t maxLen) {
     swprintf_s(out, maxLen, L"%04u-%02u-%02u", today.wYear, today.wMonth, today.wDay);
 }
 
+// "auto" or a decimal COLORREF. Releases before 0.2.0 (no SettingsVersion)
+// always wrote their white default, so white from them means "never chosen"
+// and becomes Automatic; on a dark taskbar that still renders white.
+static COLORREF LoadMeterColor(const wchar_t* key, COLORREF fallback, int version, const wchar_t* filePath) {
+    wchar_t text[32] = {};
+    GetPrivateProfileStringW(L"Overlay", key, L"", text, _countof(text), filePath);
+    if (!text[0]) return fallback;
+    if (_wcsicmp(text, L"auto") == 0) return METER_COLOR_AUTO;
+    ULONGLONG value = 0;
+    if (!ParseUnsigned64(text, &value) || value > 0x00FFFFFF) return fallback;
+    if (version < 2 && value == RGB(255, 255, 255)) return METER_COLOR_AUTO;
+    return static_cast<COLORREF>(value);
+}
+
+COLORREF ResolveMeterColor(COLORREF color, bool lightTaskbar) {
+    if (color == METER_COLOR_AUTO) return lightTaskbar ? RGB(28, 28, 28) : RGB(255, 255, 255);
+    return color & 0x00FFFFFF;
+}
+
+bool IsSystemThemeLight() {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                        L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS &&
+           value != 0;
+}
+
 bool ParseTaskbarMeterOffset(const wchar_t* text, int* value) {
     if (!value) return false;
     long parsed = 0;
@@ -204,8 +233,9 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     GetPrivateProfileStringW(L"Overlay", L"SpeedUnits", L"bytes", num, _countof(num), filePath);
     s->speedBits = _wcsicmp(num, L"bits") == 0 ? 1 : 0;
 
-    s->down = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"DownloadColor", static_cast<DWORD>(s->down), filePath));
-    s->up = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"UploadColor", static_cast<DWORD>(s->up), filePath));
+    const int version = static_cast<int>(GetPrivateProfileIntW(L"General", L"SettingsVersion", 1, filePath));
+    s->down = LoadMeterColor(L"DownloadColor", s->down, version, filePath);
+    s->up = LoadMeterColor(L"UploadColor", s->up, version, filePath);
 
     GetPrivateProfileStringW(L"Totals", L"Downloaded", L"", num, _countof(num), filePath);
     ParseUnsigned64(num, &s->lifetimeDownloaded);
@@ -239,7 +269,10 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     std::wstring out;
 
     out += L"[General]\r\n";
-    out += L"ShowTrayIcon=";
+    swprintf_s(num, L"%d", SETTINGS_VERSION);
+    out += L"SettingsVersion=";
+    out += num;
+    out += L"\r\nShowTrayIcon=";
     out += s->showTrayIcon ? L"1" : L"0";
     out += L"\r\n\r\n[Overlay]\r\n";
 
@@ -274,12 +307,16 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     out += L"\r\nSpeedUnits=";
     out += s->speedBits ? L"bits" : L"bytes";
 
-    swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
-    out += L"\r\nDownloadColor=";
-    out += num;
-    swprintf_s(num, L"%lu", static_cast<DWORD>(s->up));
-    out += L"\r\nUploadColor=";
-    out += num;
+    for (const auto& color : { std::make_pair(L"DownloadColor", s->down), std::make_pair(L"UploadColor", s->up) }) {
+        out += L"\r\n";
+        out += color.first;
+        if (color.second == METER_COLOR_AUTO) {
+            out += L"=auto";
+        } else {
+            swprintf_s(num, L"=%lu", static_cast<DWORD>(color.second & 0x00FFFFFF));
+            out += num;
+        }
+    }
 
     out += L"\r\n\r\n[Network]\r\nAdapter=";
     if (s->adapterAuto || s->adapterLuid == 0) {

@@ -80,6 +80,8 @@ enum {
     ID_SET_UP_PREFIX_EDIT = 2028,
     ID_SET_UNITS_LBL = 2029,
     ID_SET_UNITS_COMBO = 2030,
+    ID_SET_UP_AUTO = 2031,
+    ID_SET_DOWN_AUTO = 2032,
 };
 
 // Long enough to swallow a burst of keystrokes, short enough that a settings
@@ -124,8 +126,8 @@ struct SettingsUiState {
     HWND hwndGroup = nullptr;
     HWND hwndLblDownPrefix = nullptr, hwndEditDownPrefix = nullptr;
     HWND hwndLblUpPrefix = nullptr, hwndEditUpPrefix = nullptr;
-    HWND hwndLblDown = nullptr, hwndBtnDown = nullptr;
-    HWND hwndLblUp = nullptr, hwndBtnUp = nullptr;
+    HWND hwndLblDown = nullptr, hwndBtnDown = nullptr, hwndCheckDownAuto = nullptr;
+    HWND hwndLblUp = nullptr, hwndBtnUp = nullptr, hwndCheckUpAuto = nullptr;
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
     HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
     HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
@@ -155,6 +157,7 @@ static NET_LUID g_comboLuids[64] = {};   // adapter behind combo item i + 1 (ite
 static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
 static int g_overlayFontDpi = 0;
+static bool g_taskbarLight = false;   // resolves METER_COLOR_AUTO; refreshed on theme change
 
 // Overlay speed strings
 static wchar_t g_szDownSpeed[64] = L"";
@@ -291,8 +294,10 @@ static void RelayoutMainControls(int dpi) {
         { g_settingsUi.hwndEditDownPrefix, 500,  73, 125,  25 },
         { g_settingsUi.hwndLblUp,          370, 112, 125,  25 },
         { g_settingsUi.hwndBtnUp,          500, 108,  80,  25 },
+        { g_settingsUi.hwndCheckUpAuto,    592, 110, 110,  22 },
         { g_settingsUi.hwndLblDown,        370, 147, 125,  25 },
         { g_settingsUi.hwndBtnDown,        500, 143,  80,  25 },
+        { g_settingsUi.hwndCheckDownAuto,  592, 145, 110,  22 },
         { g_settingsUi.hwndLblFont,        370, 182, 125,  25 },
         { g_settingsUi.hwndBtnFont,        500, 178,  80,  25 },
         { g_settingsUi.hwndLblUnits,       370, 222, 125,  25 },
@@ -360,8 +365,8 @@ static void RefreshFontsAndRelayout(int dpi) {
         g_hwndStatusGroup, g_settingsUi.hwndGroup,
         g_settingsUi.hwndLblDownPrefix, g_settingsUi.hwndEditDownPrefix,
         g_settingsUi.hwndLblUpPrefix, g_settingsUi.hwndEditUpPrefix,
-        g_settingsUi.hwndLblDown, g_settingsUi.hwndBtnDown,
-        g_settingsUi.hwndLblUp, g_settingsUi.hwndBtnUp,
+        g_settingsUi.hwndLblDown, g_settingsUi.hwndBtnDown, g_settingsUi.hwndCheckDownAuto,
+        g_settingsUi.hwndLblUp, g_settingsUi.hwndBtnUp, g_settingsUi.hwndCheckUpAuto,
         g_settingsUi.hwndLblFont, g_settingsUi.hwndBtnFont,
         g_settingsUi.hwndLblOffset, g_settingsUi.hwndEditOffset,
         g_settingsUi.hwndSpinOffset, g_settingsUi.hwndLblOffsetUnit,
@@ -435,12 +440,12 @@ static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpee
     SetBkMode(hdcMem, TRANSPARENT);
 
     // Download speed (top half) - configured color
-    SetTextColor(hdcMem, g_settings.down);
+    SetTextColor(hdcMem, ResolveMeterColor(g_settings.down, g_taskbarLight));
     RECT rcDown = { 0, 0, w, h / 2 };
     DrawTextW(hdcMem, downSpeed, -1, &rcDown, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // Upload speed (bottom half) - configured color
-    SetTextColor(hdcMem, g_settings.up);
+    SetTextColor(hdcMem, ResolveMeterColor(g_settings.up, g_taskbarLight));
     RECT rcUp = { 0, h / 2, w, h };
     DrawTextW(hdcMem, upSpeed, -1, &rcUp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -758,7 +763,8 @@ static void PositionTaskbarOverlay() {
     DrawTextW(memory, downText, -1, &downRect, textFlags);
     GdiFlush();
     ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, middle,
-                      g_settings.up, g_settings.down);
+                      ResolveMeterColor(g_settings.up, g_taskbarLight),
+                      ResolveMeterColor(g_settings.down, g_taskbarLight));
 
     POINT destination = { target.left, target.top };
     POINT source = { 0, 0 };
@@ -1076,18 +1082,19 @@ static void UpdateTotalValues() {
     if (g_hwndLifetimeTitle) SetWindowTextW(g_hwndLifetimeTitle, title);
 }
 
-static COLORREF PickColor(HWND hwndOwner, COLORREF initColor) {
+// Returns false when the dialog is cancelled. The dialog opens on the colour
+// currently shown, resolving Automatic for the current theme.
+static bool PickColor(HWND hwndOwner, COLORREF* color) {
     static COLORREF customColors[16] = {};
     CHOOSECOLORW cc = {};
     cc.lStructSize = sizeof(cc);
     cc.hwndOwner = hwndOwner;
-    cc.rgbResult = initColor;
+    cc.rgbResult = ResolveMeterColor(*color, g_taskbarLight);
     cc.lpCustColors = customColors;
     cc.Flags = CC_RGBINIT | CC_FULLOPEN;
-    if (ChooseColorW(&cc)) {
-        return cc.rgbResult;
-    }
-    return initColor;
+    if (!ChooseColorW(&cc)) return false;
+    *color = cc.rgbResult;
+    return true;
 }
 
 static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
@@ -1165,8 +1172,10 @@ static void CreateSettingsControls(HWND hwnd) {
     SendMessageW(state.hwndEditUpPrefix, EM_SETLIMITTEXT, METER_PREFIX_CAPACITY - 1, 0);
     state.hwndLblUp = CreateMainLabel(hwnd, L"Upload color:", ID_SET_UP_LBL);
     state.hwndBtnUp = CreateMainButton(hwnd, L"Select", ID_SET_UP_BTN);
+    state.hwndCheckUpAuto = CreateMainButton(hwnd, L"Automatic", ID_SET_UP_AUTO, BS_AUTOCHECKBOX);
     state.hwndLblDown = CreateMainLabel(hwnd, L"Download color:", ID_SET_DOWN_LBL);
     state.hwndBtnDown = CreateMainButton(hwnd, L"Select", ID_SET_DOWN_BTN);
+    state.hwndCheckDownAuto = CreateMainButton(hwnd, L"Automatic", ID_SET_DOWN_AUTO, BS_AUTOCHECKBOX);
     state.hwndLblFont = CreateMainLabel(hwnd, L"Taskbar meter font:", ID_SET_FONT_LBL);
     state.hwndBtnFont = CreateMainButton(hwnd, L"Choose", ID_SET_FONT_BTN);
     state.hwndLblOffset = CreateMainLabel(hwnd, L"Taskbar meter offset:", ID_SET_OFFSET_LBL);
@@ -1238,6 +1247,8 @@ static void RefreshSettingsControls() {
     RelabelMinimumUnitChoices(g_settings.speedBits != 0);
     SendMessageW(state.hwndComboUnit, CB_SETCURSEL, static_cast<WPARAM>(g_settings.minimumSpeedUnit), 0);
     SendMessageW(state.hwndComboDecimals, CB_SETCURSEL, g_settings.decimalPlaces, 0);
+    SendMessageW(state.hwndCheckUpAuto, BM_SETCHECK, g_settings.up == METER_COLOR_AUTO ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(state.hwndCheckDownAuto, BM_SETCHECK, g_settings.down == METER_COLOR_AUTO ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(state.hwndCheckWidget, BM_SETCHECK, g_settings.showWidget ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(state.hwndCheckTray, BM_SETCHECK, g_settings.showTrayIcon ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(state.hwndCheckStartup, BM_SETCHECK, g_settings.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1377,11 +1388,22 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
             state.tempSettings.decimalPlaces = selection;
             ApplyLiveMeterSettings();
         }
-    } else if (id == ID_SET_DOWN_BTN) {
-        state.tempSettings.down = PickColor(hwnd, state.tempSettings.down);
-        ApplyLiveMeterSettings();
-    } else if (id == ID_SET_UP_BTN) {
-        state.tempSettings.up = PickColor(hwnd, state.tempSettings.up);
+    } else if (id == ID_SET_DOWN_BTN || id == ID_SET_UP_BTN) {
+        const bool down = id == ID_SET_DOWN_BTN;
+        COLORREF& color = down ? state.tempSettings.down : state.tempSettings.up;
+        COLORREF chosen = color;
+        if (PickColor(hwnd, &chosen)) {
+            color = chosen;
+            SendMessageW(down ? state.hwndCheckDownAuto : state.hwndCheckUpAuto, BM_SETCHECK, BST_UNCHECKED, 0);
+            ApplyLiveMeterSettings();
+        }
+    } else if ((id == ID_SET_DOWN_AUTO || id == ID_SET_UP_AUTO) && code == BN_CLICKED) {
+        const bool down = id == ID_SET_DOWN_AUTO;
+        COLORREF& color = down ? state.tempSettings.down : state.tempSettings.up;
+        const bool automatic = SendMessageW(down ? state.hwndCheckDownAuto : state.hwndCheckUpAuto,
+                                            BM_GETCHECK, 0, 0) == BST_CHECKED;
+        // Turning Automatic off keeps the colour on screen, now as a fixed choice.
+        color = automatic ? METER_COLOR_AUTO : ResolveMeterColor(color, g_taskbarLight);
         ApplyLiveMeterSettings();
     } else if (id == ID_SET_FONT_BTN) {
         PickFont(hwnd, &state.tempSettings, g_currentDpi);
@@ -1516,6 +1538,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_DISPLAYCHANGE:
     case WM_SETTINGCHANGE: {
+        // Windows broadcasts "ImmersiveColorSet" when light/dark mode changes.
+        if (msg == WM_SETTINGCHANGE && lp &&
+            wcscmp(reinterpret_cast<const wchar_t*>(lp), L"ImmersiveColorSet") == 0) {
+            g_taskbarLight = IsSystemThemeLight();
+            UpdateTrayIcon();
+        }
         CreateOrUpdateOverlay();
         return 0;
     }
@@ -1642,6 +1670,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_uTaskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
     LoadSettings(&g_settings);
+    g_taskbarLight = IsSystemThemeLight();
     g_lastTotalsSaveTick = GetTickCount64();
 
     WNDCLASSEXW wc = { sizeof(wc) };

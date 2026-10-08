@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M5** (bits per second, localized date).
+- Last completed milestone: **M6** (theme-aware colours).
 
 ## 0.2.0 milestone plan
 
@@ -25,7 +25,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M4** Adapter selection: "Automatic" mode that follows the default route (new default),
       remembered manual choice, re-evaluated while running.
 - [x] **M5** Formatting: bits-per-second option; locale-aware "since" date.
-- [ ] **M6** Theme-aware default meter colours, with a settings-version migration.
+- [x] **M6** Theme-aware default meter colours, with a settings-version migration.
 - [ ] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
 - [ ] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
       hooks) to a dedicated thread fed by state snapshots. No behavior change.
@@ -220,3 +220,24 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   API (it hardcoded DD/MM, which would fail on en-US runners).
 - Verified: build clean; 48 unit tests; 18/18 integration checks; isolation guard clean;
   screenshot of the new window checked.
+
+### M6: theme-aware colours (2026-10-08)
+- `METER_COLOR_AUTO` (0xFF000000, never produced by ChooseColor) is the new default for both
+  colours. `ResolveMeterColor` maps it to white on a dark taskbar and RGB(28,28,28) on a
+  light one (`IsSystemThemeLight` reads `HKCU\...\Themes\Personalize\SystemUsesLightTheme`).
+  `g_taskbarLight` is read at startup and on `WM_SETTINGCHANGE("ImmersiveColorSet")`.
+- Files now carry `[General] SettingsVersion=2`. Migration: a file without it (0.1.x) that
+  has white (16777215, the old default) gets Automatic; any other colour is kept. The dev
+  machine's deployed file has white for both, so it migrates to Automatic and still renders
+  white on its dark taskbar. Colours are saved as `auto` or decimal; values above 0xFFFFFF or
+  non-numeric fall back to Automatic.
+- UI: an "Automatic" checkbox beside each colour button (IDs 2031 up, 2032 down). Picking a
+  colour unchecks it; unchecking pins the colour currently on screen. `PickColor` now reports
+  Cancel (it used to re-apply and save the unchanged colour) and opens on the resolved colour.
+- Contract change, deliberate: "Reset meter" restores Automatic colours, so
+  `CustomizationTotals` now expects `auto` instead of 16777215.
+- Tests: `TestFreshColorDefaults` (now Automatic, still white on dark), `TestMeterColorResolution`,
+  `TestMeterColorSettings` (migration, explicit, garbage, round trip); integration
+  `ThemeColors` (legacy migration, pin on screen colour computed from the same registry value,
+  back to auto).
+- Verified: build clean; 50 unit tests; 19/19 integration checks; isolation guard clean.

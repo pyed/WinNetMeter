@@ -8,6 +8,16 @@ constexpr int SPEED_DECIMAL_PLACES_MIN = 0;
 constexpr int SPEED_DECIMAL_PLACES_MAX = 2;
 constexpr size_t METER_PREFIX_CAPACITY = 32;
 
+// Settings files written by 0.2.0+ carry [General] SettingsVersion=2.
+constexpr int SETTINGS_VERSION = 2;
+
+// A meter colour that follows the taskbar theme: white on a dark taskbar,
+// near-black on a light one. ChooseColor never returns it (high byte is 0).
+constexpr COLORREF METER_COLOR_AUTO = 0xFF000000;
+COLORREF ResolveMeterColor(COLORREF color, bool lightTaskbar);
+// True when Windows uses the light theme for the taskbar ("default Windows mode").
+bool IsSystemThemeLight();
+
 enum class MinimumSpeedUnit {
     Auto,
     Kilobytes,
@@ -30,8 +40,8 @@ inline int ClampSpeedDecimalPlaces(int value) {
 bool ParseTaskbarMeterOffset(const wchar_t* text, int* value);
 
 struct AppSettings {
-    COLORREF down = RGB(255, 255, 255); // Download speed color
-    COLORREF up = RGB(255, 255, 255);   // Upload speed color
+    COLORREF down = METER_COLOR_AUTO;   // Download speed color
+    COLORREF up = METER_COLOR_AUTO;     // Upload speed color
     wchar_t fontFamily[64] = L"Segoe UI";
     wchar_t downPrefix[METER_PREFIX_CAPACITY] = L"\u2193";
     wchar_t upPrefix[METER_PREFIX_CAPACITY] = L"\u2191";

@@ -272,8 +272,10 @@ void TestSpeedFormattingSettings() {
     assert(defaults.minimumSpeedUnit == MinimumSpeedUnit::Auto);
     assert(defaults.decimalPlaces == 2);
     printf("PASS: TestSpeedFormattingSettingsDefaults\n");
-    assert(defaults.down == RGB(255, 255, 255));
-    assert(defaults.up == RGB(255, 255, 255));
+    // Fresh installs follow the taskbar theme; on a dark taskbar that is still white.
+    assert(defaults.down == METER_COLOR_AUTO);
+    assert(defaults.up == METER_COLOR_AUTO);
+    assert(ResolveMeterColor(defaults.down, false) == RGB(255, 255, 255));
     printf("PASS: TestFreshColorDefaults\n");
 
     const MinimumSpeedUnit units[] = {
@@ -616,6 +618,56 @@ void TestLocalizedSinceDate() {
     assert(!FormatLifetimeSinceDate(L"2023-02-29", text, _countof(text), L"en-US"));
     assert(!FormatLifetimeSinceDate(L"2024-02-29", text, 3, L"en-US"));    // too small: fails cleanly
     printf("PASS: TestLocalizedSinceDate\n");
+}
+
+void TestMeterColors() {
+    assert(ResolveMeterColor(METER_COLOR_AUTO, false) == RGB(255, 255, 255));
+    assert(ResolveMeterColor(METER_COLOR_AUTO, true) == RGB(28, 28, 28));
+    assert(ResolveMeterColor(RGB(10, 200, 100), true) == RGB(10, 200, 100));
+    assert(ResolveMeterColor(0x01123456, false) == 0x00123456);   // stray high byte ignored
+    printf("INFO: taskbar theme is %s\n", IsSystemThemeLight() ? "light" : "dark");
+    printf("PASS: TestMeterColorResolution\n");
+
+    const wchar_t* path = L".\\test_meter_colors.ini";
+    AppSettings loaded;
+
+    // 0.1.x files have no SettingsVersion and always wrote their white default:
+    // white becomes Automatic, any other colour stays.
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"DownloadColor", L"16777215", path);
+    WritePrivateProfileStringW(L"Overlay", L"UploadColor", L"255", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.down == METER_COLOR_AUTO);
+    assert(loaded.up == RGB(255, 0, 0));
+
+    // From 0.2.0 on, white is an explicit choice and is kept.
+    WritePrivateProfileStringW(L"General", L"SettingsVersion", L"2", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.down == RGB(255, 255, 255));
+
+    // "auto", garbage, and out-of-range values.
+    WritePrivateProfileStringW(L"Overlay", L"DownloadColor", L"auto", path);
+    WritePrivateProfileStringW(L"Overlay", L"UploadColor", L"16777216", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.down == METER_COLOR_AUTO);
+    assert(loaded.up == METER_COLOR_AUTO);
+    WritePrivateProfileStringW(L"Overlay", L"UploadColor", L"blue", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.up == METER_COLOR_AUTO);
+
+    // Round trip writes the version, "auto", and explicit colours.
+    AppSettings saved;
+    saved.up = RGB(1, 2, 3);
+    assert(SaveSettingsCustom(&saved, path));
+    assert(GetPrivateProfileIntW(L"General", L"SettingsVersion", 0, path) == SETTINGS_VERSION);
+    wchar_t value[32] = {};
+    GetPrivateProfileStringW(L"Overlay", L"DownloadColor", L"", value, _countof(value), path);
+    assert(wcscmp(value, L"auto") == 0);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.down == METER_COLOR_AUTO);
+    assert(loaded.up == RGB(1, 2, 3));
+    DeleteFileW(path);
+    printf("PASS: TestMeterColorSettings\n");
 }
 
 static AdapterInfo MockAdapter(ULONGLONG luid, const wchar_t* name, IF_OPER_STATUS status, DWORD type) {
@@ -1067,6 +1119,7 @@ int main() {
     TestAdapterSettings();
     TestBitRateFormatting();
     TestSpeedUnitsSetting();
+    TestMeterColors();
     TestLocalizedSinceDate();
     TestDefaultRouteLookup();
     TestTaskbarPlacement();

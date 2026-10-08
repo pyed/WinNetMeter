@@ -3,7 +3,7 @@ param(
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
-                 'AdapterSelection', 'SpeedUnits')]
+                 'AdapterSelection', 'SpeedUnits', 'ThemeColors')]
     [string]$Check
 )
 
@@ -455,6 +455,9 @@ if ($Check -eq 'Imports') {
 
 $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`n"
+} elseif ($Check -eq 'ThemeColors') {
+    # As written by 0.1.x: no SettingsVersion, white download (the old default), red upload.
+    "[Overlay]`r`nShowWidget=1`r`nDownloadColor=16777215`r`nUploadColor=255`r`n"
 } elseif ($Check -eq 'SpeedUnits') {
     "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
 } elseif ($Check -eq 'CustomizationTotals') {
@@ -798,8 +801,8 @@ try {
 
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2016, [IntPtr]::Zero)
             Assert-True (Wait-IniInt 'Overlay' 'TaskbarOffset' 0) 'Meter reset did not reset offset'
-            Assert-True (Wait-IniInt 'Overlay' 'DownloadColor' 16777215) 'Meter reset did not reset download color'
-            Assert-True (Wait-IniInt 'Overlay' 'UploadColor' 16777215) 'Meter reset did not reset upload color'
+            Assert-True (Wait-IniString 'Overlay' 'DownloadColor' 'auto') 'Meter reset did not restore the automatic download color'
+            Assert-True (Wait-IniString 'Overlay' 'UploadColor' 'auto') 'Meter reset did not restore the automatic upload color'
             Assert-True (Wait-IniInt 'Overlay' 'FontStyle' 1) 'Meter reset did not reset font style'
             Assert-True (Wait-IniInt 'Overlay' 'DecimalPlaces' 2) 'Meter reset did not reset decimal places'
             foreach ($item in @(@('DownloadPrefix', 'x2193'), @('UploadPrefix', 'x2191'), @('FontFamily', 'Segoe UI'), @('FontSize', '8.0'), @('MinimumSpeedUnit', 'Auto'))) {
@@ -958,6 +961,34 @@ try {
             Assert-True ((Get-ComboText $minimum 2) -eq 'MB/s') "Minimum-unit choices are not in bytes: '$(Get-ComboText $minimum 2)'"
             foreach ($text in (& $speedTexts)) { Assert-True ($text -match '^\d+\.\d (MB|GB)/s$') "Unexpected byte-rate text: '$text'" }
             'SPEED_UNITS_OK'
+        }
+        'ThemeColors' {
+            $main = Get-AppWindow $session $mainClass
+            $upAuto = [WinNetMeterNative]::GetDlgItem($main.Handle, 2031)
+            $downAuto = [WinNetMeterNative]::GetDlgItem($main.Handle, 2032)
+            Assert-True ($upAuto -ne [IntPtr]::Zero -and $downAuto -ne [IntPtr]::Zero) 'Automatic color controls were not found'
+            $checked = { param([IntPtr]$box) [int][WinNetMeterNative]::SendMessageW($box, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero) -eq 1 }
+            $click = {
+                param([IntPtr]$box, [int]$id, [bool]$on)
+                [void][WinNetMeterNative]::SendMessageW($box, 0x00F1, [IntPtr]([int]$on), [IntPtr]::Zero)
+                [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]$id, $box)
+            }
+
+            # Migration: the old white default became Automatic; the chosen red stayed.
+            Assert-True (& $checked $downAuto) 'Legacy white download color did not migrate to Automatic'
+            Assert-True (-not (& $checked $upAuto)) 'Legacy custom upload color was turned into Automatic'
+
+            # Turning Automatic off pins the color currently on screen for this theme.
+            $light = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).PSObject.Properties['SystemUsesLightTheme']
+            $expected = if ($light -and $light.Value -ne 0) { 28 + 28 * 256 + 28 * 65536 } else { 16777215 }
+            & $click $downAuto 2032 $false
+            Assert-True ((Get-IniString 'Overlay' 'DownloadColor') -eq "$expected") "Pinned color is '$(Get-IniString 'Overlay' 'DownloadColor')', expected $expected"
+            Assert-True ((Get-IniString 'Overlay' 'UploadColor') -eq '255') 'Upload color changed unexpectedly'
+            Assert-True ((Get-IniString 'General' 'SettingsVersion') -eq '2') 'Saved file lacks SettingsVersion=2'
+
+            & $click $downAuto 2032 $true
+            Assert-True ((Get-IniString 'Overlay' 'DownloadColor') -eq 'auto') 'Automatic download color was not saved'
+            'THEME_COLORS_OK'
         }
     }
 } finally {
