@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M1** (test isolation and tooling).
+- Last completed milestone: **M2** (settings save hardening).
 
 ## 0.2.0 milestone plan
 
@@ -18,7 +18,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M1** Test isolation and tooling: `--settings <path>` and a separate Run-key value name
       in `--integration-test` mode; harness uses a temp settings file; `run_tests.bat` uses
       `.\unit_tests.exe`; CI actions `checkout`/`upload-artifact` v4 -> v7.
-- [ ] **M2** Settings save hardening: POSIX-semantics rename, retry, in-place fallback; fix the
+- [x] **M2** Settings save hardening: POSIX-semantics rename, retry, in-place fallback; fix the
       stacking save-failure dialog.
 - [ ] **M3** Application manifest (Common Controls v6, PerMonitorV2, supportedOS, asInvoker);
       drop the runtime DPI call; `Metadata` check asserts the manifest.
@@ -142,3 +142,24 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   while the deployed instance kept running; no temp directories or test Run values left.
 - Gotcha: GNU `sed` treats `\u` in a replacement as "uppercase next char"; it turned
   `.\unit_tests.exe` into `.Nit_tests.exe`. Use the editor for edits containing backslashes.
+
+### M2: settings save hardening (2026-10-08)
+- `WriteFileAtomic` (`settings.cpp`) now swaps the temp file in with
+  `SetFileInformationByHandle(FileRenameInfoEx, REPLACE_IF_EXISTS | POSIX_SEMANTICS)`, falling
+  back to `MoveFileExW`; retries up to 4 times (15/30/45 ms) on access-denied or sharing
+  errors; then rewrites the file in place (`TRUNCATE_EXISTING`, full sharing), which is what
+  pre-0.1.6 releases did. Worst-case extra delay on a genuine failure: ~90 ms.
+- `SaveSettingsCustom` normalizes the path with `GetFullPathNameW` (the rename API needs a
+  fully qualified target).
+- `ReportSettingsSaveFailure` (`main.cpp`) clears the flag before showing the box and refuses
+  to re-enter, so the modal loop cannot stack dialogs; a new failure is reported once, later.
+- Tests written first and seen failing on the old code: unit `TestSaveWithOpenHandles`
+  (holder with read|write|delete sharing -> saved atomically; read|write -> saved in place;
+  read only -> fails, file unchanged) and integration check `SaveFailureDialog` (read-only
+  test settings file, two open requests -> exactly one dialog; the old code showed 2). The
+  stacking-dialog bug is therefore reproduced, not just traced.
+- CI now reads the behavioral check list from the harness `ValidateSet` (minus the three PE
+  checks run by the build job), so new checks run in CI automatically. Fails if fewer than 12
+  are parsed.
+- `.gitignore`: `src/tests/*.ini`, `*.ini.tmp`, `test_override/` (left only by aborted tests).
+- Verified: build clean; 40 unit tests; 16/16 integration checks; isolation guard clean.

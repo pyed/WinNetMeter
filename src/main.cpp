@@ -210,6 +210,14 @@ static void SchedulePersistSettings() {
 }
 
 static void ReportSettingsSaveFailure(HWND hwnd) {
+    // The message box runs a modal loop that can re-enter here (a meter
+    // double-click, a failing periodic save). Clear the flag before showing it
+    // and allow only one box, so a later failure is reported once, afterwards.
+    static bool reporting = false;
+    g_settingsSaveFailed = false;
+    if (reporting) return;
+    reporting = true;
+
     wchar_t path[MAX_PATH] = {};
     GetSettingsPath(path, _countof(path));
     wchar_t message[MAX_PATH + 192] = {};
@@ -219,7 +227,7 @@ static void ReportSettingsSaveFailure(HWND hwnd) {
                  L"Your changes stay active for this session only.",
                  path);
     MessageBoxW(hwnd, message, L"WinNetMeter", MB_OK | MB_ICONERROR);
-    g_settingsSaveFailed = false; // reported; only warn again after a new failure
+    reporting = false;
 }
 
 static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi,

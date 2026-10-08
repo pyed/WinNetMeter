@@ -5,6 +5,7 @@
 #include <cwchar>
 #include <climits>
 #include <string>
+#include <vector>
 
 static const wchar_t RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t DEFAULT_RUN_VALUE[] = L"WinNetMeter";
@@ -267,41 +268,91 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     return out;
 }
 
+#ifndef FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+#define FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x00000001
+#endif
+#ifndef FILE_RENAME_FLAG_POSIX_SEMANTICS
+#define FILE_RENAME_FLAG_POSIX_SEMANTICS 0x00000002
+#endif
+
+static bool WriteSettingsText(HANDLE file, const std::wstring& text) {
+    const wchar_t bom = 0xFEFF;
+    DWORD written = 0;
+    if (!WriteFile(file, &bom, sizeof(bom), &written, nullptr) || written != sizeof(bom)) return false;
+    if (!text.empty()) {
+        const DWORD bytes = static_cast<DWORD>(text.size() * sizeof(wchar_t));
+        if (!WriteFile(file, text.data(), bytes, &written, nullptr) || written != bytes) return false;
+    }
+    return FlushFileBuffers(file) != FALSE;
+}
+
+// Swaps source over target. POSIX semantics (Windows 10 1709+) let the swap
+// succeed while another process holds the target open with delete sharing, as
+// virus scanners and indexers do; plain MoveFileExW fails in that case.
+static bool ReplaceByRename(const std::wstring& source, const std::wstring& target) {
+    HANDLE file = CreateFileW(source.c_str(), DELETE | SYNCHRONIZE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        const size_t bytes = sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t);
+        std::vector<ULONGLONG> buffer((bytes + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG), 0);
+        auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+        info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        info->RootDirectory = nullptr;
+        info->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
+        memcpy(info->FileName, target.c_str(), info->FileNameLength);
+        BOOL renamed = SetFileInformationByHandle(file, FileRenameInfoEx, info, static_cast<DWORD>(bytes));
+        CloseHandle(file);
+        if (renamed) return true;
+    }
+    return MoveFileExW(source.c_str(), target.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+}
+
 // Writes to a sibling temp file, flushes it, then swaps it into place, so an
-// interrupted save can never leave a half-written settings file behind.
+// interrupted save can never leave a half-written settings file behind. If a
+// holder refuses delete sharing, falls back to rewriting the file in place,
+// which is what releases before 0.1.6 always did.
 static bool WriteFileAtomic(const std::wstring& path, const std::wstring& text) {
     const std::wstring tempPath = path + L".tmp";
     HANDLE file = CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, nullptr,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-
-    bool ok = true;
-    const wchar_t bom = 0xFEFF;
-    DWORD written = 0;
-    if (!WriteFile(file, &bom, sizeof(bom), &written, nullptr) || written != sizeof(bom)) {
-        ok = false;
-    }
-    if (ok && !text.empty()) {
-        const DWORD bytes = static_cast<DWORD>(text.size() * sizeof(wchar_t));
-        if (!WriteFile(file, text.data(), bytes, &written, nullptr) || written != bytes) {
-            ok = false;
-        }
-    }
-    if (ok && !FlushFileBuffers(file)) ok = false;
+    bool written = WriteSettingsText(file, text);
     CloseHandle(file);
 
-    if (ok && !MoveFileExW(tempPath.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        ok = false;
+    bool replaced = false;
+    for (int attempt = 0; written && !replaced && attempt < 4; ++attempt) {
+        if (attempt > 0) Sleep(15 * attempt);
+        replaced = ReplaceByRename(tempPath, path);
+        if (!replaced) {
+            DWORD error = GetLastError();
+            if (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
+                error != ERROR_LOCK_VIOLATION) {
+                break;
+            }
+        }
     }
-    if (!ok) DeleteFileW(tempPath.c_str());
-    return ok;
+    DeleteFileW(tempPath.c_str());
+    if (replaced || !written) return replaced;
+
+    HANDLE target = CreateFileW(path.c_str(), GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, TRUNCATE_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (target == INVALID_HANDLE_VALUE) return false;
+    bool rewritten = WriteSettingsText(target, text);
+    CloseHandle(target);
+    return rewritten;
 }
 
 bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
     if (!s || !filePath) return false;
 
-    std::wstring path(filePath);
+    // The rename API needs a fully qualified target, and relative names would
+    // otherwise resolve differently for the reader (see GetDefaultSettingsPath).
+    wchar_t full[MAX_PATH * 4] = {};
+    DWORD length = GetFullPathNameW(filePath, _countof(full), full, nullptr);
+    std::wstring path = (length > 0 && length < _countof(full)) ? full : filePath;
     size_t slash = path.find_last_of(L"\\/");
     if (slash != std::wstring::npos) {
         std::wstring directory = path.substr(0, slash);

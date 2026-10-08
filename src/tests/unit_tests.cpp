@@ -834,6 +834,43 @@ void TestLegacyAnsiSettingsStillLoad() {
     DeleteFileW(path);
 }
 
+// Regression: the 0.1.6 atomic save (MoveFileExW replace) failed whenever any
+// other handle was open on settings.ini, even one sharing delete access, while
+// the older in-place write succeeded. Scanners, indexers and sync tools hold
+// such handles. Expected now: delete-sharing holder -> atomic replace works;
+// read/write holder -> in-place fallback works; read-only holder -> fails and
+// the file is left as it was (the old code failed there too).
+void TestSaveWithOpenHandles() {
+    const wchar_t* path = L".\\test_settings_shared.ini";
+    struct Case { DWORD share; bool expectSaved; const char* name; } cases[] = {
+        { FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, true, "read|write|delete" },
+        { FILE_SHARE_READ | FILE_SHARE_WRITE, true, "read|write" },
+        { FILE_SHARE_READ, false, "read" },
+    };
+    int offset = 100;
+    for (const Case& c : cases) {
+        DeleteFileW(path);
+        AppSettings s;
+        s.taskbarOffset = offset;
+        assert(SaveSettingsCustom(&s, path));
+        HANDLE holder = CreateFileW(path, GENERIC_READ, c.share, nullptr, OPEN_EXISTING, 0, nullptr);
+        assert(holder != INVALID_HANDLE_VALUE);
+        s.taskbarOffset = offset + 1;
+        bool saved = SaveSettingsCustom(&s, path);
+        CloseHandle(holder);
+        AppSettings loaded;
+        LoadSettingsCustom(&loaded, path);
+        if (saved != c.expectSaved) printf("FAIL: holder %s: saved=%d expected=%d\n", c.name, saved, c.expectSaved);
+        assert(saved == c.expectSaved);
+        assert(loaded.taskbarOffset == (c.expectSaved ? offset + 1 : offset));
+        offset += 10;
+    }
+    std::wstring temp = std::wstring(path) + L".tmp";
+    assert(GetFileAttributesW(temp.c_str()) == INVALID_FILE_ATTRIBUTES);
+    DeleteFileW(path);
+    printf("PASS: TestSaveWithOpenHandles\n");
+}
+
 // Integration tests redirect the settings file. SaveSettings, LoadSettings and
 // GetSettingsPath must all follow the override, it must be absolute (the INI
 // reader resolves relative names against %WINDIR%), and nullptr must restore it.
@@ -874,6 +911,7 @@ int main() {
     TestSettings();
     TestSettingsPathOverride();
     TestSaveReportsFailure();
+    TestSaveWithOpenHandles();
     TestUnicodeSettingsRoundTrip();
     TestLegacyAnsiSettingsStillLoad();
     TestSpeedFormattingSettings();

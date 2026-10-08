@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
-                 'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals')]
+                 'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog')]
     [string]$Check
 )
 
@@ -765,6 +765,32 @@ try {
             $startupProperties = Get-ItemProperty -LiteralPath $startupKey
             Assert-True ($null -eq $startupProperties.PSObject.Properties[$startupValueName]) 'Startup entry was not removed'
             'PREFERENCES_INTEGRATION_OK'
+        }
+        'SaveFailureDialog' {
+            $main = Get-AppWindow $session $mainClass
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            $unitCombo = [WinNetMeterNative]::GetDlgItem($main.Handle, 2018)
+            Assert-True ($unitCombo -ne [IntPtr]::Zero) 'Minimum speed unit control was not found'
+            Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $true
+            try {
+                # A live meter change persists at once; the read-only file makes that save fail.
+                [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)
+                # Opening the window reports the failure in a modal box. The second request is
+                # dispatched inside that box's modal loop and must not stack another dialog.
+                Assert-True ([WinNetMeterNative]::PostMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'First open request failed'
+                Start-Sleep -Milliseconds 700
+                Assert-True ([WinNetMeterNative]::PostMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'Second open request failed'
+                Start-Sleep -Milliseconds 900
+                $dialogs = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id) |
+                    Where-Object { $_.ClassName -eq '#32770' -and $_.Visible })
+                foreach ($dialog in $dialogs) {
+                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+                }
+                Assert-True ($dialogs.Count -eq 1) "Expected one save-failure dialog, found $($dialogs.Count)"
+                'SAVE_FAILURE_DIALOG_OK'
+            } finally {
+                Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
+            }
         }
     }
 } finally {

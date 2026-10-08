@@ -57,8 +57,9 @@ jobs:
     name: Behavioral Integration Checks (x64 Windows)
     runs-on: windows-latest
     needs: build
-    # These drive a real window, taskbar and Explorer on the runner. All 12
-    # passed on windows-latest in run 35670075116, so they gate the build.
+    # These drive a real window, taskbar and Explorer on the runner and gate the
+    # build. The list is read from the harness, so a new check runs here as soon
+    # as it is added to its ValidateSet.
 
     steps:
       - name: Checkout repository
@@ -72,11 +73,12 @@ jobs:
       - name: Run Behavioral Integration Checks
         shell: pwsh
         run: |
-          $checks = @(
-            'SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
-            'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'ResourceLeak',
-            'FormattingDisplay', 'Preferences', 'CustomizationTotals'
-          )
+          $harness = Get-Content -Raw src/tests/windows_integration_tests.ps1
+          $set = [regex]::Match($harness, "(?s)ValidateSet\((.*?)\)\]").Groups[1].Value
+          $peChecks = @('Metadata', 'StaticRuntime', 'Imports')   # run by the build job
+          $checks = @([regex]::Matches($set, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value } |
+                      Where-Object { $_ -notin $peChecks })
+          if ($checks.Count -lt 12) { throw "Parsed only $($checks.Count) checks from the harness" }
           $failed = @()
           foreach ($check in $checks) {
             Write-Host "::group::$check"

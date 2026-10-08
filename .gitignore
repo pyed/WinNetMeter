@@ -26,3 +26,8 @@ src/tests/test_settings.ini
 # Local AI tooling
 .agents/
 .unlazy/
+
+# Unit-test scratch files (left behind only when a test aborts)
+src/tests/*.ini
+src/tests/*.ini.tmp
+src/tests/test_override/
