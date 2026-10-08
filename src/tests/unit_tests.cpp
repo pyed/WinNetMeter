@@ -937,12 +937,29 @@ void TestAnchorSettings() {
 
 void TestEmbedSetting() {
     const wchar_t* path = L".\\test_embed_settings.ini";
-    // Opt-in: files without the key (every earlier release) keep the overlay.
+    // On by default since 0.3.0, including for files without the key (0.1.x).
     AppSettings defaults;
-    assert(defaults.embedInTaskbar == 0);
+    assert(defaults.embedInTaskbar == 1);
     DeleteFileW(path);
     WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-796", path);
     AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.embedInTaskbar == 1);
+
+    // 0.2.0 wrote Embed=0 into every file while embedding was opt-in, so its
+    // files get the new default...
+    WritePrivateProfileStringW(L"General", L"SettingsVersion", L"2", path);
+    WritePrivateProfileStringW(L"Overlay", L"Embed", L"0", path);
+    loaded.embedInTaskbar = 0;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.embedInTaskbar == 1);
+    // ...while an explicit 0 anywhere else is respected: hand-written files...
+    WritePrivateProfileStringW(L"General", L"SettingsVersion", nullptr, path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.embedInTaskbar == 0);
+    // ...and files from 0.3.0 on, where unticking it is a choice.
+    WritePrivateProfileStringW(L"General", L"SettingsVersion", L"3", path);
+    loaded.embedInTaskbar = 1;
     LoadSettingsCustom(&loaded, path);
     assert(loaded.embedInTaskbar == 0);
 

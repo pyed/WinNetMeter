@@ -230,7 +230,11 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     } else {
         s->meterAnchor = METER_ANCHOR_TRAY;
     }
-    s->embedInTaskbar = (GetPrivateProfileIntW(L"Overlay", L"Embed", 0, filePath) != 0) ? 1 : 0;
+    // On unless switched off. 0.2.0 (SettingsVersion=2), where it was opt-in,
+    // wrote Embed=0 into every file it saved, so a 0 from it was not a choice.
+    const int version = static_cast<int>(GetPrivateProfileIntW(L"General", L"SettingsVersion", 1, filePath));
+    const int embed = static_cast<int>(GetPrivateProfileIntW(L"Overlay", L"Embed", 1, filePath));
+    s->embedInTaskbar = (embed != 0 || version == 2) ? 1 : 0;
     s->allTaskbars = (GetPrivateProfileIntW(L"Overlay", L"AllTaskbars", 0, filePath) != 0) ? 1 : 0;
 
     GetPrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"Auto", num, _countof(num), filePath);
@@ -251,7 +255,6 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     GetPrivateProfileStringW(L"Overlay", L"SpeedUnits", L"bytes", num, _countof(num), filePath);
     s->speedBits = _wcsicmp(num, L"bits") == 0 ? 1 : 0;
 
-    const int version = static_cast<int>(GetPrivateProfileIntW(L"General", L"SettingsVersion", 1, filePath));
     s->down = LoadMeterColor(L"DownloadColor", s->down, version, filePath);
     s->up = LoadMeterColor(L"UploadColor", s->up, version, filePath);
 

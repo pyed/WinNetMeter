@@ -8,8 +8,8 @@ constexpr int SPEED_DECIMAL_PLACES_MIN = 0;
 constexpr int SPEED_DECIMAL_PLACES_MAX = 2;
 constexpr size_t METER_PREFIX_CAPACITY = 32;
 
-// Settings files written by 0.2.0+ carry [General] SettingsVersion=2.
-constexpr int SETTINGS_VERSION = 2;
+// [General] SettingsVersion: absent before 0.2.0, 2 from 0.2.0, 3 from 0.3.0.
+constexpr int SETTINGS_VERSION = 3;
 
 // AppSettings::meterAnchor values (MeterAnchor in overlay.h).
 constexpr int METER_ANCHOR_LEGACY = 0;   // 0.1.x fixed point; only for migrated files
@@ -58,7 +58,7 @@ struct AppSettings {
     int startWithWindows = 0;          // Mirrors the current user's Run registry entry
     int meterAnchor = METER_ANCHOR_TRAY;   // what taskbarOffset is measured from
     int taskbarOffset = 0;             // Logical pixels from the anchor
-    int embedInTaskbar = 0;            // 1 = draw as a child of the taskbar (stays visible over Start)
+    int embedInTaskbar = 1;            // 1 = draw as a child of the taskbar (stays visible over Start)
     int allTaskbars = 0;               // 1 = also on secondary taskbars (other monitors)
     MinimumSpeedUnit minimumSpeedUnit = MinimumSpeedUnit::Auto;
     int decimalPlaces = 2;

@@ -585,7 +585,7 @@ function Wait-AppWindows([System.Diagnostics.Process]$Process) {
     throw 'Timed out waiting for WinNetMeter host and meter windows'
 }
 
-function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n", [switch]$KeepSettings) {
+function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`n", [switch]$KeepSettings) {
     Assert-True (Wait-NoRunningApp) 'A WinNetMeter process from this build is already running'
     if (-not $KeepSettings) {
         [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
@@ -892,20 +892,22 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
 } elseif ($Check -eq 'SpeedUnits') {
     "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
 } elseif ($Check -eq 'Embedded') {
-    "[Overlay]`r`nShowWidget=1`r`nEmbed=1`r`n"
+    # No Embed key, as for a new installation: embedded is the default.
+    "[Overlay]`r`nShowWidget=1`r`n"
 } elseif ($Check -eq 'AllTaskbars') {
-    "[Overlay]`r`nShowWidget=1`r`nAllTaskbars=1`r`n"
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nAllTaskbars=1`r`n"
 } elseif ($Check -eq 'VerticalTaskbar') {
     # Magenta for pixel checks; 10 pt bold with "Up"/"Dn" prefixes is too wide for a
     # two-line meter on a 48 px taskbar, so the stacked font has to be fitted down.
-    "[Overlay]`r`nShowWidget=1`r`nAllTaskbars=1`r`nFontSize=10.0`r`nUploadPrefix=x00550070`r`nDownloadPrefix=x0044006E`r`nDecimalPlaces=1`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`n"
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nAllTaskbars=1`r`nFontSize=10.0`r`nUploadPrefix=x00550070`r`nDownloadPrefix=x0044006E`r`nDecimalPlaces=1`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`n"
 } elseif ($Check -eq 'StartMenu') {
     # Magenta "WWWW 0 GB/s" on both lines: a constant patch of unmistakable pixels.
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`nDownloadPrefix=x0057005700570057`r`nUploadPrefix=x0057005700570057`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
 } elseif ($Check -eq 'CustomizationTotals') {
-    "[Overlay]`r`nShowWidget=1`r`nDownloadPrefix=x0044003A`r`nUploadPrefix=x0055003A`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`nFontFamily=Arial`r`nFontSize=11.0`r`nFontStyle=0`r`nTaskbarOffset=37`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n[Totals]`r`nDownloaded=8388608`r`nUploaded=3145728`r`nSince=2024-02-29`r`n"
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadPrefix=x0044003A`r`nUploadPrefix=x0055003A`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`nFontFamily=Arial`r`nFontSize=11.0`r`nFontStyle=0`r`nTaskbarOffset=37`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n[Totals]`r`nDownloaded=8388608`r`nUploaded=3145728`r`nSince=2024-02-29`r`n"
 } else {
-    "[Overlay]`r`nShowWidget=1`r`n"
+    # Most checks exercise the separate overlay window; embedded mode has its own.
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`n"
 }
 $startupKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if ($Check -eq 'Preferences') {
@@ -1481,7 +1483,7 @@ try {
             & $click $downAuto 2032 $false
             Assert-True ((Get-IniString 'Overlay' 'DownloadColor') -eq "$expected") "Pinned color is '$(Get-IniString 'Overlay' 'DownloadColor')', expected $expected"
             Assert-True ((Get-IniString 'Overlay' 'UploadColor') -eq '255') 'Upload color changed unexpectedly'
-            Assert-True ((Get-IniString 'General' 'SettingsVersion') -eq '2') 'Saved file lacks SettingsVersion=2'
+            Assert-True ((Get-IniString 'General' 'SettingsVersion') -eq '3') 'Saved file lacks SettingsVersion=3'
 
             & $click $downAuto 2032 $true
             Assert-True ((Get-IniString 'Overlay' 'DownloadColor') -eq 'auto') 'Automatic download color was not saved'
@@ -1537,7 +1539,7 @@ try {
         }
         'Embedded' {
             $main = Get-AppWindow $session $mainClass
-            Assert-True (Wait-MeterMode $session $true) 'Embed=1 did not start as a child of the taskbar'
+            Assert-True (Wait-MeterMode $session $true) 'A new installation did not start as a child of the taskbar'
             $meter = Get-EmbeddedMeter $session
             $child = [uint64]0x40000000
             $layered = [uint64]0x80000
