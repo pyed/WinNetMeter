@@ -4,7 +4,7 @@ param(
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
                  'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu',
-                 'AllTaskbars', 'VerticalTaskbar')]
+                 'AllTaskbars', 'VerticalTaskbar', 'IdleRedraws')]
     [string]$Check
 )
 
@@ -269,6 +269,9 @@ public static class WinNetMeterNative
         GetClassNameW(hwnd, name, name.Capacity);
         return name.ToString();
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetPropW(IntPtr hwnd, string name);
 
     public static ulong ExStyleOf(IntPtr hwnd)
     {
@@ -900,6 +903,9 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
     # Magenta for pixel checks; 10 pt bold with "Up"/"Dn" prefixes is too wide for a
     # two-line meter on a 48 px taskbar, so the stacked font has to be fitted down.
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nAllTaskbars=1`r`nFontSize=10.0`r`nUploadPrefix=x00550070`r`nDownloadPrefix=x0044006E`r`nDecimalPlaces=1`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`n"
+} elseif ($Check -eq 'IdleRedraws') {
+    # Text that cannot change ("0 GB/s"); no tray icon, so nothing moves the meter.
+    "[General]`r`nShowTrayIcon=0`r`n[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
 } elseif ($Check -eq 'StartMenu') {
     # Magenta "WWWW 0 GB/s" on both lines: a constant patch of unmistakable pixels.
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`nDownloadPrefix=x0057005700570057`r`nUploadPrefix=x0057005700570057`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
@@ -1765,6 +1771,58 @@ try {
             } finally {
                 $fake.Dispose()
             }
+        }
+        'IdleRedraws' {
+            # A render that would draw the same picture skips the drawing: with text
+            # that cannot change, neither the once-a-second refresh nor a moving
+            # foreground window may repaint the meter, and a real change must.
+            # Meter windows count their paints in the WinNetMeter.Paints property.
+            $main = Get-AppWindow $session $mainClass
+            $paints = { param([IntPtr]$hwnd) [WinNetMeterNative]::GetPropW($hwnd, 'WinNetMeter.Paints').ToInt64() }
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            Start-Sleep -Milliseconds 1500
+            $start = & $paints $overlay.Handle
+            Assert-True ($start -ge 1) 'The meter reports no paints'
+            Start-Sleep -Milliseconds 3500   # at least three refreshes
+            $idle = (& $paints $overlay.Handle) - $start
+
+            $probe = [WinNetMeterNative]::CreateWindowExW(
+                0, 'STATIC', 'WinNetMeter move probe', 0x10CF0000,
+                100, 100, 400, 200, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True ($probe -ne [IntPtr]::Zero) 'Failed to create the move probe'
+            try {
+                [void][WinNetMeterNative]::SetForegroundWindow($probe)
+                [WinNetMeterNative]::NotifyWinEvent(3, $probe, 0, 0)
+                for ($step = 0; $step -lt 30; ++$step) {
+                    [void][WinNetMeterNative]::SetWindowPos($probe, [IntPtr]::Zero, 100 + 5 * $step, 100, 400, 200, 0x0014)
+                    [WinNetMeterNative]::NotifyWinEvent(0x800B, $probe, 0, 0)
+                    Start-Sleep -Milliseconds 20
+                }
+                Start-Sleep -Milliseconds 300
+            } finally {
+                [void][WinNetMeterNative]::DestroyWindow($probe)
+            }
+            $moves = (& $paints $overlay.Handle) - $start - $idle
+            Assert-True ($idle -eq 0 -and $moves -eq 0) "An unchanged meter was redrawn: $idle times in 3.5 s, $moves times while a window moved"
+
+            # A real change is drawn: one decimal place turns "0 GB/s" into "0.0 GB/s".
+            $before = & $paints $overlay.Handle
+            Select-ComboItem $main.Handle ([WinNetMeterNative]::GetDlgItem($main.Handle, 2020)) 2020 1
+            $deadline = [Environment]::TickCount + 2000
+            while ((& $paints $overlay.Handle) -eq $before -and [Environment]::TickCount -lt $deadline) { Start-Sleep -Milliseconds 50 }
+            Assert-True ((& $paints $overlay.Handle) -gt $before) 'Changing the text did not redraw the meter'
+
+            # The embedded meter skips the same way.
+            Set-EmbedMode $session $main.Handle $true
+            $child = Get-EmbeddedMeter $session
+            Start-Sleep -Milliseconds 1500
+            $childStart = & $paints $child.Handle
+            Assert-True ($childStart -ge 1) 'The embedded meter reports no paints'
+            Start-Sleep -Milliseconds 3500
+            $childIdle = (& $paints $child.Handle) - $childStart
+            Assert-True ($childIdle -eq 0) "An unchanged embedded meter was redrawn $childIdle times in 3.5 s"
+            "IDLE_REDRAWS overlay: $start paints to start, then $idle in 3.5 s and $moves during 30 window moves; embedded: $childIdle in 3.5 s"
+            'IDLE_REDRAWS_OK'
         }
     }
 } finally {

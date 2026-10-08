@@ -1119,6 +1119,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_uTaskbarCreatedMsg && g_uTaskbarCreatedMsg != 0) {
         SetupTrayIcon();
         UpdateMeter();
+        RequestMeterRefresh();
         return 0;
     }
 
@@ -1229,6 +1230,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             UpdateTrayIcon();
         }
         UpdateMeter();
+        RequestMeterRefresh();   // redraw even if the meter's own state did not change
         return 0;
     }
     case WM_TRAYICON: {

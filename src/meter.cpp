@@ -40,6 +40,35 @@ constexpr UINT_PTR RAISE_TIMER = 2;
 constexpr UINT RAISE_INTERVAL_MS = 100;
 constexpr int RAISE_REPEATS = 8;
 
+// Everything a meter window's picture depends on. A render that would draw the
+// same picture again skips the drawing: most renders do (the once-a-second
+// refresh with an unchanged speed, and every move of the foreground window).
+struct PaintedMeter {
+    POINT destination = {};   // screen, or parent-client for an embedded meter
+    int width = 0;
+    int height = 0;
+    UINT dpi = 0;
+    int rowHeight = 0;        // 0: two-line layout
+    COLORREF upColor = 0;
+    COLORREF downColor = 0;
+    std::wstring font;        // family, size and style
+    std::wstring text;        // every line drawn, plus what sized a stacked font
+
+    bool operator==(const PaintedMeter& other) const {
+        return destination.x == other.destination.x && destination.y == other.destination.y &&
+               width == other.width && height == other.height && dpi == other.dpi &&
+               rowHeight == other.rowHeight && upColor == other.upColor && downColor == other.downColor &&
+               font == other.font && text == other.text;
+    }
+};
+
+// Redrawn anyway after this long, in case something outside the app (a display
+// driver reset, say) lost the window's picture without telling us.
+constexpr ULONGLONG REPAINT_AFTER_MS = 60000;
+
+// Paint count per meter window, readable from other processes (tests).
+const wchar_t PAINT_COUNT_PROP[] = L"WinNetMeter.Paints";
+
 // One meter per taskbar. The primary taskbar's comes first; secondary taskbars
 // (other monitors) get one each when all taskbars are wanted.
 struct MeterSlot {
@@ -47,6 +76,9 @@ struct MeterSlot {
     HWND taskbar = nullptr;   // Shell_TrayWnd (may be null for the primary) or a Shell_SecondaryTrayWnd
     HWND window = nullptr;    // the meter
     bool embedded = false;    // window is a child of taskbar, else a topmost overlay
+    bool painted = false;     // window shows lastPaint (drawn at paintedAt)
+    PaintedMeter lastPaint;
+    ULONGLONG paintedAt = 0;
 };
 
 struct CachedFont {
@@ -518,7 +550,36 @@ bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi,
     return updated != FALSE;
 }
 
-void RenderOverlay(const MeterSlot& slot) {
+// PaintMeter, unless the slot's window already shows exactly this picture.
+bool PaintSlot(MeterSlot& slot, POINT destination, int width, int height, UINT dpi,
+               HFONT stackedFont, int rowHeight) {
+    PaintedMeter picture;
+    picture.destination = destination;
+    picture.width = width;
+    picture.height = height;
+    picture.dpi = dpi;
+    picture.rowHeight = stackedFont ? rowHeight : 0;
+    picture.upColor = g_state.upColor;
+    picture.downColor = g_state.downColor;
+    picture.font = g_state.fontFamily + L'|' + std::to_wstring(g_state.fontSize) + L'|' +
+                   std::to_wstring(g_state.fontStyle);
+    picture.text = stackedFont
+        ? g_state.upHead + L'\n' + g_state.upUnit + L'\n' + g_state.downHead + L'\n' + g_state.downUnit +
+          L'\n' + g_state.upHeadWidest + L'\n' + g_state.downHeadWidest
+        : g_state.upText + L'\n' + g_state.downText;
+    const ULONGLONG now = GetTickCount64();
+    if (slot.painted && picture == slot.lastPaint && now - slot.paintedAt < REPAINT_AFTER_MS) return true;
+
+    slot.painted = PaintMeter(slot.window, destination, width, height, dpi, stackedFont, rowHeight);
+    if (!slot.painted) return false;
+    slot.lastPaint = std::move(picture);
+    slot.paintedAt = now;
+    const ULONG_PTR count = reinterpret_cast<ULONG_PTR>(GetPropW(slot.window, PAINT_COUNT_PROP)) + 1;
+    SetPropW(slot.window, PAINT_COUNT_PROP, reinterpret_cast<HANDLE>(count));
+    return true;
+}
+
+void RenderOverlay(MeterSlot& slot) {
     RECT taskbar = {};
     UINT edge = ABE_BOTTOM;
     if (!ShouldShowOverlay(slot, &taskbar, &edge)) {
@@ -531,8 +592,8 @@ void RenderOverlay(const MeterSlot& slot) {
     const MeterPlacement placement = PlaceMeter(slot, taskbar, edge, dpi);
     const RECT& target = placement.target;
     POINT destination = { target.left, target.top };
-    if (PaintMeter(slot.window, destination, target.right - target.left, target.bottom - target.top, dpi,
-                   placement.stackedFont, placement.rowHeight)) {
+    if (PaintSlot(slot, destination, target.right - target.left, target.bottom - target.top, dpi,
+                  placement.stackedFont, placement.rowHeight)) {
         const UINT show = IsWindowVisible(slot.window) ? 0 : SWP_SHOWWINDOW;
         SetWindowPos(slot.window, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
@@ -547,7 +608,7 @@ void RenderOverlay(const MeterSlot& slot) {
 // taskbar, so no fullscreen or auto-hide tracking is needed. Plain child windows
 // are hidden under the taskbar's XAML content; layered ones are not. Layered
 // child windows require the manifest's Windows 8+ declaration.
-void RenderEmbedded(const MeterSlot& slot) {
+void RenderEmbedded(MeterSlot& slot) {
     // Lay out against the taskbar window's own rectangle: the child's position is
     // relative to it, so an auto-hiding taskbar carries the meter as it slides.
     RECT taskbar = {};
@@ -576,14 +637,14 @@ void RenderEmbedded(const MeterSlot& slot) {
     // taskbar is mirrored (right-to-left layouts).
     MapWindowPoints(nullptr, slot.taskbar, reinterpret_cast<POINT*>(&target), 2);
     POINT destination = { target.left, target.top };
-    if (PaintMeter(slot.window, destination, width, height, dpi, placement.stackedFont, placement.rowHeight)) {
+    if (PaintSlot(slot, destination, width, height, dpi, placement.stackedFont, placement.rowHeight)) {
         // Above the taskbar's own child windows (its XAML host covers the whole bar).
         const UINT show = IsWindowVisible(slot.window) ? 0 : SWP_SHOWWINDOW;
         SetWindowPos(slot.window, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
     }
 }
 
-void RenderSlot(const MeterSlot& slot) {
+void RenderSlot(MeterSlot& slot) {
     if (!slot.window) return;
     if (slot.embedded) {
         RenderEmbedded(slot);
@@ -595,7 +656,7 @@ void RenderSlot(const MeterSlot& slot) {
 // Fullscreen tracking only matters to overlays; embedded meters hide with
 // their taskbar.
 void RenderOverlays() {
-    for (const MeterSlot& slot : g_slots) {
+    for (MeterSlot& slot : g_slots) {
         if (!slot.embedded) RenderSlot(slot);
     }
 }
@@ -630,7 +691,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
-        for (const MeterSlot& slot : g_slots) {
+        for (MeterSlot& slot : g_slots) {
             if (slot.window == hwnd) {
                 RenderSlot(slot);
                 break;
@@ -638,6 +699,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, PAINT_COUNT_PROP);
+        break;
     case WM_DPICHANGED:
     case WM_DPICHANGED_AFTERPARENT:
         PostMessageW(g_host, WM_METER_REFRESH, 0, 0);
@@ -667,6 +731,7 @@ void DestroySlotWindow(MeterSlot& slot) {
     if (slot.window && IsWindow(slot.window)) DestroyWindow(slot.window);
     slot.window = nullptr;
     slot.embedded = false;
+    slot.painted = false;
 }
 
 HWND CreateOverlayWindow(const MeterSlot& slot) {
@@ -688,6 +753,7 @@ void EnsureSlotWindow(MeterSlot& slot) {
         // Destroyed along with its taskbar (Explorer restarted).
         slot.window = nullptr;
         slot.embedded = false;
+        slot.painted = false;
     }
     if (slot.window && slot.embedded && (!g_state.embedded || GetParent(slot.window) != slot.taskbar)) {
         DestroySlotWindow(slot);
@@ -840,6 +906,8 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_METER_REFRESH:
+        // The display, the taskbar or the theme changed: draw everything afresh.
+        for (MeterSlot& slot : g_slots) slot.painted = false;
         SyncMeters();
         return 0;
     case WM_METER_CHECK:
