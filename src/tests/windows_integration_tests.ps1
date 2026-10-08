@@ -123,6 +123,40 @@ public static class WinNetMeterNative
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
     [DllImport("shell32.dll")]
     private static extern UIntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    public static extern bool AreDpiAwarenessContextsEqual(IntPtr first, IntPtr second);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeLibrary(IntPtr module);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr FindResourceW(IntPtr module, IntPtr name, IntPtr type);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LoadResource(IntPtr module, IntPtr resource);
+    [DllImport("kernel32.dll")]
+    private static extern uint SizeofResource(IntPtr module, IntPtr resource);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LockResource(IntPtr data);
+
+    // Returns the embedded application manifest (RT_MANIFEST #1), or null.
+    public static string ReadManifest(string path)
+    {
+        IntPtr module = LoadLibraryExW(path, IntPtr.Zero, 0x22);  // AS_DATAFILE | AS_IMAGE_RESOURCE
+        if (module == IntPtr.Zero) return null;
+        try {
+            IntPtr resource = FindResourceW(module, new IntPtr(1), new IntPtr(24));
+            if (resource == IntPtr.Zero) return null;
+            uint size = SizeofResource(module, resource);
+            IntPtr data = LockResource(LoadResource(module, resource));
+            var bytes = new byte[size];
+            Marshal.Copy(data, bytes, 0, (int)size);
+            return Encoding.UTF8.GetString(bytes);
+        } finally {
+            FreeLibrary(module);
+        }
+    }
 
     public static RECT GetMonitorRect(IntPtr hwnd)
     {
@@ -324,6 +358,12 @@ if ($Check -eq 'Metadata') {
     Assert-True ($version.OriginalFilename -eq 'WinNetMeter.exe') 'OriginalFilename mismatch'
     Assert-True ($version.FileVersion -eq $sourceVersion) 'FileVersion mismatch'
     Assert-True ($version.ProductVersion -eq $sourceVersion) 'ProductVersion mismatch'
+    $manifest = [WinNetMeterNative]::ReadManifest($exePath)
+    Assert-True ($null -ne $manifest) 'No embedded application manifest'
+    Assert-True ($manifest -match 'name="Microsoft\.Windows\.Common-Controls"\s+version="6\.0\.0\.0"') 'Manifest lacks the Common Controls 6 dependency'
+    Assert-True ($manifest -match '>PerMonitorV2<') 'Manifest does not declare PerMonitorV2'
+    Assert-True ($manifest -match '\{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a\}') 'Manifest does not declare Windows 10 support'
+    Assert-True ($manifest -match 'level="asInvoker"') 'Manifest does not request asInvoker'
     'VERSION_METADATA_OK'
     exit 0
 }
@@ -403,6 +443,12 @@ try {
             $popup = [uint64]2147483648
             Assert-True (-not $main.Visible) 'Main host is visible in resting mode'
             Assert-True (($main.ExStyle -band $toolWindow) -eq 0) 'Main window still uses tool-window chrome'
+            # Without the manifest's Common Controls 6 dependency the process binds the
+            # legacy 5.82 assembly and the settings window gets unthemed controls.
+            $session.Process.Refresh()
+            $comctl = @($session.Process.Modules | Where-Object ModuleName -ieq 'comctl32.dll' | ForEach-Object FileName)
+            Assert-True (@($comctl | Where-Object { $_ -match 'common-controls_6595b64144ccf1df_6\.' }).Count -ge 1) "Common Controls 6 not loaded: $($comctl -join '; ')"
+            Assert-True (@($comctl | Where-Object { $_ -match 'common-controls_6595b64144ccf1df_5\.' }).Count -eq 0) "Legacy Common Controls 5.82 loaded: $($comctl -join '; ')"
             Assert-True $overlay.Visible 'Overlay is not visible'
             Assert-True (($overlay.Style -band $popup) -ne 0) 'Overlay is not WS_POPUP'
             Assert-True (($overlay.ExStyle -band ($toolWindow -bor $layered -bor $noActivate)) -eq
@@ -584,6 +630,8 @@ try {
             $taskbar = [WinNetMeterNative]::GetTaskbar().rc
             $dpi = [WinNetMeterNative]::GetDpiForWindow($overlay.Handle)
             Assert-True ($dpi -ge 96 -and $dpi -le 768) "Invalid live overlay DPI: $dpi"
+            $context = [WinNetMeterNative]::GetWindowDpiAwarenessContext($overlay.Handle)
+            Assert-True ([WinNetMeterNative]::AreDpiAwarenessContextsEqual($context, [IntPtr](-4))) 'Overlay is not per-monitor v2 DPI aware'
             $scale = { param([int]$value) [int][Math]::Floor(($value * $dpi + 48) / 96) }
             $padding = [Math]::Max(1, (& $scale 2))
             $expectedWidth = [Math]::Max(1, [Math]::Min((& $scale 132),

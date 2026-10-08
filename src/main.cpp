@@ -1519,8 +1519,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     g_hInst = hInst;
 
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    InitCommonControls();
+    // DPI awareness (PerMonitorV2) comes from the embedded manifest. Under Common
+    // Controls 6, InitCommonControls() is a no-op, so register explicitly.
+    INITCOMMONCONTROLSEX controls = { sizeof(controls), ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS };
+    InitCommonControlsEx(&controls);
 
     g_uTaskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 

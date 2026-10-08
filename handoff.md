@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M2** (settings save hardening).
+- Last completed milestone: **M3** (application manifest).
 
 ## 0.2.0 milestone plan
 
@@ -20,7 +20,7 @@ refactor lands with no behavior change before features are built on it.
       `.\unit_tests.exe`; CI actions `checkout`/`upload-artifact` v4 -> v7.
 - [x] **M2** Settings save hardening: POSIX-semantics rename, retry, in-place fallback; fix the
       stacking save-failure dialog.
-- [ ] **M3** Application manifest (Common Controls v6, PerMonitorV2, supportedOS, asInvoker);
+- [x] **M3** Application manifest (Common Controls v6, PerMonitorV2, supportedOS, asInvoker);
       drop the runtime DPI call; `Metadata` check asserts the manifest.
 - [ ] **M4** Adapter selection: "Automatic" mode that follows the default route (new default),
       remembered manual choice, re-evaluated while running.
@@ -162,4 +162,20 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   checks run by the build job), so new checks run in CI automatically. Fails if fewer than 12
   are parsed.
 - `.gitignore`: `src/tests/*.ini`, `*.ini.tmp`, `test_override/` (left only by aborted tests).
+- Verified: build clean; 40 unit tests; 16/16 integration checks; isolation guard clean.
+
+### M3: application manifest (2026-10-08)
+- `src/app.manifest`, embedded by `app.rc` as resource 1 of type 24: Common Controls 6,
+  `asInvoker` (`uiAccess=false`), supportedOS Windows 10 (also what makes layered child windows
+  legal for M10), `PerMonitorV2` with a `true/pm` fallback. No `assemblyIdentity`, so there is
+  no version string to keep in sync with `version.h`.
+- Removed the runtime `SetProcessDpiAwarenessContext` call; the manifest sets awareness at
+  process creation. `InitCommonControls()` (a no-op under v6) became
+  `InitCommonControlsEx(ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS)`.
+- Minimum OS is now **Windows 10 1607**: the only DPI-era import left is `GetDpiForWindow`.
+  Mention this in the README (M13); re-check imports if later milestones add APIs.
+- Harness: `Metadata` asserts the manifest content (read via `LoadLibraryEx` +
+  `FindResource`); `WindowStyles` asserts the process loads comctl32 6.x and not 5.82; `Dpi`
+  asserts the overlay window is PerMonitorV2. Negative control: the manifest assertion
+  reports "absent" on a pre-manifest build.
 - Verified: build clean; 40 unit tests; 16/16 integration checks; isolation guard clean.
