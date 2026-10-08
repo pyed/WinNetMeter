@@ -3,7 +3,8 @@ param(
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
-                 'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu')]
+                 'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu',
+                 'AllTaskbars')]
     [string]$Check
 )
 
@@ -291,17 +292,112 @@ public static class WinNetMeterNative
         return FindWindowExW(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null);
     }
 
-    // A process's windows parented directly to the taskbar (the embedded meter).
-    public static WindowInfo[] GetTaskbarChildren(uint wantedProcessId)
+    // A process's windows parented directly to a window (an embedded meter).
+    public static WindowInfo[] GetChildWindows(IntPtr parent, uint wantedProcessId)
     {
         var windows = new List<WindowInfo>();
-        IntPtr taskbar = TaskbarWindow();
-        if (taskbar == IntPtr.Zero) return windows.ToArray();
-        for (IntPtr child = FindWindowExW(taskbar, IntPtr.Zero, null, null); child != IntPtr.Zero;
-             child = FindWindowExW(taskbar, child, null, null)) {
+        if (parent == IntPtr.Zero) return windows.ToArray();
+        for (IntPtr child = FindWindowExW(parent, IntPtr.Zero, null, null); child != IntPtr.Zero;
+             child = FindWindowExW(parent, child, null, null)) {
             if (ProcessOf(child) == wantedProcessId) windows.Add(Describe(child));
         }
         return windows.ToArray();
+    }
+
+    public static WindowInfo[] GetTaskbarChildren(uint wantedProcessId)
+    {
+        return GetChildWindows(TaskbarWindow(), wantedProcessId);
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WNDCLASSEX
+    {
+        public uint cbSize, style;
+        public IntPtr lpfnWndProc;
+        public int cbClsExtra, cbWndExtra;
+        public IntPtr hInstance, hIcon, hCursor, hbrBackground;
+        public string lpszMenuName, lpszClassName;
+        public IntPtr hIconSm;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam, lParam;
+        public uint time;
+        public int x, y;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern ushort RegisterClassExW(ref WNDCLASSEX windowClass);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool UnregisterClassW(string className, IntPtr instance);
+    [DllImport("user32.dll")]
+    private static extern int GetMessageW(out MSG message, IntPtr hwnd, uint first, uint last);
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG message);
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessageW(ref MSG message);
+    [DllImport("user32.dll")]
+    private static extern bool PostThreadMessageW(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandleW(string name);
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+    private static extern IntPtr GetProcAddress(IntPtr module, string name);
+
+    // Stands in for a second monitor's taskbar (a Shell_SecondaryTrayWnd window)
+    // on a single-monitor machine. It runs on its own thread with a message loop,
+    // as a real one does, because a meter embedded in it shares that input queue.
+    public sealed class FakeTaskbar : IDisposable
+    {
+        private readonly System.Threading.Thread thread;
+        private readonly System.Threading.ManualResetEventSlim ready = new System.Threading.ManualResetEventSlim(false);
+        private uint threadId;
+        public IntPtr Handle { get; private set; }
+
+        public FakeTaskbar(string className, int x, int y, int width, int height)
+        {
+            thread = new System.Threading.Thread(() => Run(className, x, y, width, height));
+            thread.IsBackground = true;
+            thread.Start();
+            if (!ready.Wait(5000) || Handle == IntPtr.Zero) throw new InvalidOperationException("The stand-in taskbar was not created");
+        }
+
+        private void Run(string className, int x, int y, int width, int height)
+        {
+            threadId = GetCurrentThreadId();
+            SetThreadDpiAwarenessContext(new IntPtr(-4));
+            IntPtr instance = GetModuleHandleW(null);
+            var windowClass = new WNDCLASSEX {
+                cbSize = (uint)Marshal.SizeOf(typeof(WNDCLASSEX)),
+                lpfnWndProc = GetProcAddress(GetModuleHandleW("user32.dll"), "DefWindowProcW"),
+                hInstance = instance,
+                hbrBackground = new IntPtr(9),   // COLOR_WINDOWTEXT + 1
+                lpszClassName = className
+            };
+            RegisterClassExW(ref windowClass);
+            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, WS_POPUP | WS_VISIBLE
+            Handle = CreateWindowExW(0x08000080, className, null, 0x90000000, x, y, width, height,
+                                     IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+            ready.Set();
+            MSG message;
+            while (GetMessageW(out message, IntPtr.Zero, 0, 0) > 0) {
+                TranslateMessage(ref message);
+                DispatchMessageW(ref message);
+            }
+            if (Handle != IntPtr.Zero) DestroyWindow(Handle);
+            UnregisterClassW(className, instance);
+        }
+
+        public void Dispose()
+        {
+            if (thread.IsAlive) {
+                PostThreadMessageW(threadId, 0x0012, IntPtr.Zero, IntPtr.Zero);   // WM_QUIT
+                thread.Join(5000);
+            }
+        }
     }
 
     [DllImport("user32.dll")]
@@ -584,14 +680,38 @@ function Wait-MeterMode($Session, [bool]$Embedded, [int]$TimeoutMs = 4000) {
     return $false
 }
 
-# The embed option takes effect on Apply, like the other check boxes beside it.
-function Set-EmbedMode($Session, [IntPtr]$Main, [bool]$On) {
-    $box = [WinNetMeterNative]::GetDlgItem($Main, 2035)
-    Assert-True ($box -ne [IntPtr]::Zero) 'Embed control was not found'
+# The meter check boxes take effect on Apply.
+function Set-MeterOption([IntPtr]$Main, [int]$Id, [string]$Key, [bool]$On) {
+    $box = [WinNetMeterNative]::GetDlgItem($Main, $Id)
+    Assert-True ($box -ne [IntPtr]::Zero) "Control $Id was not found"
     [void][WinNetMeterNative]::SendMessageW($box, 0x00F1, [IntPtr][int]$On, [IntPtr]::Zero)
     [void][WinNetMeterNative]::SendMessageW($Main, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
-    Assert-True (Wait-IniString 'Overlay' 'Embed' ([string][int]$On)) "Embed=$([int]$On) was not saved"
+    Assert-True (Wait-IniString 'Overlay' $Key ([string][int]$On)) "$Key=$([int]$On) was not saved"
+}
+
+function Set-EmbedMode($Session, [IntPtr]$Main, [bool]$On) {
+    Set-MeterOption $Main 2035 'Embed' $On
     Assert-True (Wait-MeterMode $Session $On) "The meter did not switch to $(if ($On) { 'embedded' } else { 'overlay' }) mode"
+}
+
+# Polls until the session's meters are exactly: $Overlays visible overlay
+# windows and, per parent window in $Children, one embedded meter.
+function Wait-Meters($Session, [int]$Overlays, [IntPtr[]]$Children = @(), [int]$TimeoutMs = 4000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        $all = @([WinNetMeterNative]::GetWindows([uint32]$Session.Process.Id) | Where-Object ClassName -eq 'WinNetMeterOverlay')
+        $visible = @($all | Where-Object Visible)
+        $childrenOk = $true
+        foreach ($parent in $Children) {
+            $found = @([WinNetMeterNative]::GetChildWindows($parent, [uint32]$Session.Process.Id) |
+                       Where-Object { $_.ClassName -eq 'WinNetMeterEmbedded' -and $_.Visible })
+            if ($found.Count -ne 1) { $childrenOk = $false }
+        }
+        if ($all.Count -eq $Overlays -and $visible.Count -eq $Overlays -and $childrenOk) { return $true }
+        Start-Sleep -Milliseconds 50
+    } while ([Environment]::TickCount -lt $deadline)
+    Write-Host "  Wait-Meters timed out: $($visible.Count) of $($all.Count) overlays visible (wanted $Overlays); children ok: $childrenOk"
+    return $false
 }
 
 # Magenta pixels on screen where the meter is (the StartMenu check draws it magenta).
@@ -755,6 +875,8 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
 } elseif ($Check -eq 'Embedded') {
     "[Overlay]`r`nShowWidget=1`r`nEmbed=1`r`n"
+} elseif ($Check -eq 'AllTaskbars') {
+    "[Overlay]`r`nShowWidget=1`r`nAllTaskbars=1`r`n"
 } elseif ($Check -eq 'StartMenu') {
     # Magenta "WWWW 0 GB/s" on both lines: a constant patch of unmistakable pixels.
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`nDownloadPrefix=x0057005700570057`r`nUploadPrefix=x0057005700570057`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
@@ -1458,6 +1580,66 @@ try {
                 }
             } finally {
                 Close-StartMenu
+            }
+        }
+        'AllTaskbars' {
+            # No second monitor here or on CI runners: a stand-in Shell_SecondaryTrayWnd,
+            # owned by this script, plays the secondary taskbar along the top edge of
+            # the primary monitor.
+            $main = Get-AppWindow $session $mainClass
+            Assert-True (Wait-Meters $session 1) 'Expected only the primary meter before a secondary taskbar exists'
+            $taskbar = [WinNetMeterNative]::GetTaskbar().rc
+            $primaryWindow = [WinNetMeterNative]::TaskbarWindow()
+            $monitor = [WinNetMeterNative]::GetMonitorRect($primaryWindow)
+            $thickness = [Math]::Min($taskbar.Bottom - $taskbar.Top, $taskbar.Right - $taskbar.Left)
+            $fake = New-Object WinNetMeterNative+FakeTaskbar('Shell_SecondaryTrayWnd', $monitor.Left, $monitor.Top,
+                                                            ($monitor.Right - $monitor.Left), $thickness)
+            try {
+                $fakeRect = New-Object WinNetMeterNative+RECT
+                [void][WinNetMeterNative]::GetWindowRect($fake.Handle, [ref]$fakeRect)
+                Assert-True (Wait-Meters $session 2) 'No meter appeared on the secondary taskbar'
+                $onFake = {
+                    @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id) | Where-Object {
+                        $_.ClassName -eq 'WinNetMeterOverlay' -and $_.Rect.Top -ge $fakeRect.Top -and $_.Rect.Bottom -le $fakeRect.Bottom
+                    })
+                }
+                Assert-True (@(& $onFake).Count -eq 1) 'The second meter is not on the secondary taskbar'
+
+                # "Next to the tray": as far from the end as on the primary taskbar,
+                # which keeps it off a secondary taskbar's clock.
+                $tray = [WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')
+                if ($tray -and $taskbar.Right - $taskbar.Left -gt $taskbar.Bottom - $taskbar.Top) {
+                    $dpi = [WinNetMeterNative]::GetDpiForWindow($primaryWindow)
+                    $gap = [int][Math]::Floor((4 * $dpi + 48) / 96)
+                    $expected = $fakeRect.Right - ($taskbar.Right - $tray.Left) - $gap
+                    $deadline = [Environment]::TickCount + 3000
+                    do {
+                        $meter = @(& $onFake) | Select-Object -First 1
+                        $placed = $null -ne $meter -and $meter.Rect.Right -eq $expected
+                        if (-not $placed) { Start-Sleep -Milliseconds 50 }
+                    } while (-not $placed -and [Environment]::TickCount -lt $deadline)
+                    Assert-True $placed "Secondary meter right edge is $($meter.Rect.Right), expected $expected"
+                }
+                $meter = @(& $onFake)[0]
+                [void][WinNetMeterNative]::SendMessageW($meter.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
+                Assert-True (Wait-WindowVisible $session $mainClass) 'Secondary meter double-click did not open the window'
+
+                Set-MeterOption $main.Handle 2036 'AllTaskbars' $false
+                Assert-True (Wait-Meters $session 1) 'Turning the option off did not remove the secondary meter'
+                Set-MeterOption $main.Handle 2036 'AllTaskbars' $true
+                Assert-True (Wait-Meters $session 2) 'Turning the option on did not bring the secondary meter back'
+
+                # Embedded: one child per taskbar, no overlays.
+                Set-MeterOption $main.Handle 2035 'Embed' $true
+                Assert-True (Wait-Meters $session 0 @($primaryWindow, $fake.Handle)) 'Embedded mode did not put a meter in each taskbar'
+
+                # A secondary taskbar going away (monitor unplugged) takes its meter with it.
+                $fake.Dispose()
+                Assert-True (Wait-Meters $session 0 @($primaryWindow)) 'The primary meter did not survive the secondary taskbar going away'
+                Assert-True (-not $session.Process.HasExited) 'WinNetMeter exited when the secondary taskbar went away'
+                'ALL_TASKBARS_OK'
+            } finally {
+                $fake.Dispose()
             }
         }
     }

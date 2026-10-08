@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M10** (embedded mode).
+- Last completed milestone: **M11** (meters on all taskbars).
 
 ## 0.2.0 milestone plan
 
@@ -33,7 +33,7 @@ refactor lands with no behavior change before features are built on it.
       relative to the anchor; legacy files keep their exact old position.
 - [x] **M10** Embedded mode (opt-in): the meter is a layered child window of the taskbar, so it
       stays visible while Start is open. Automatic fallback to the overlay.
-- [ ] **M11** Meters on secondary-monitor taskbars (opt-in).
+- [x] **M11** Meters on secondary-monitor taskbars (opt-in).
 - [ ] **M12** Shell fullscreen signal (`ABN_FULLSCREENAPP`) as an extra trigger, if it proves
       reliable for an appbar that reserves no space.
 - [ ] **M13** README, version 0.2.0, push, CI, tag, release, deploy to the dev machine.
@@ -367,3 +367,38 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
 - Verified: build clean; 58 unit tests; 22/22 integration checks; `StartMenu` 5/5 extra runs;
   `ResourceLeak` flat in both modes (GDI 21->21; USER 68->68 overlay, 67->67 embedded);
   isolation guard clean.
+
+### M11: meters on all taskbars (2026-10-09)
+- `meter.cpp` now keeps one `MeterSlot` per taskbar: the primary (`Shell_TrayWnd`, located
+  through the appbar API as before) and, when `MeterState::allTaskbars` is set, every visible
+  top-level `Shell_SecondaryTrayWnd`. Each slot has its own overlay or embedded child (same
+  mode for all, same per-slot fallback to an overlay). Slots are reconciled on every sync
+  (at least once a second): taskbars that appear get a meter, ones that disappear (monitor
+  unplugged) lose theirs. Hooks and the fullscreen heuristic treat any slot window as ours.
+- Secondary taskbars have no appbar API: their edge comes from the window and monitor rects
+  (`TaskbarEdgeOnMonitor`), auto-hide from how much of the window is on its monitor
+  (`IsTaskbarMostlyOnMonitor`), fullscreen per monitor as for the primary.
+- Anchors on a secondary taskbar: Windows 11 has no window for its clock, so "next to the
+  tray" reserves the primary's notification-area length (in logical px) at the far end
+  (`MirrorTrayArea`), which keeps the meter off the secondary clock. Windows 10 class names
+  `ClockButton` and `WorkerW` -> `MSTaskListWClass` are used when present; they come from
+  public taskbar tools and are **not verified here**. "After the app buttons" falls back to the
+  left edge where there is no task list window.
+- Font cache: one font per DPI (bounded), so monitors at different DPIs do not recreate it on
+  every render.
+- Setting `[Overlay] AllTaskbars=0|1` (default 0). UI: checkbox 2036 "Show on all taskbars" at
+  y=427 right, applied with Apply.
+- **Not tested on real multiple monitors** (the dev machine and CI runners have one). The
+  `AllTaskbars` check creates a stand-in `Shell_SecondaryTrayWnd` (`FakeTaskbar` in the
+  harness, its own thread and message loop) along the top of the primary monitor and asserts:
+  a second meter appears on it at the mirrored position, double-click works, the option off/on
+  removes/restores it, embedded mode puts one child in each taskbar, and removing the stand-in
+  removes its meter while the primary one stays. Negative control: without the mirroring the
+  check fails ("right edge is 1276, expected 1018").
+- Tests: unit `TestAllTaskbarsSetting`, `TestSecondaryTaskbarGeometry`; integration
+  `AllTaskbars`.
+- Gotcha: the Bash tool turns a double backslash into a single one, even inside a quoted
+  heredoc, so Python patches containing C++ string escapes (`L"\r\n..."`) silently fail to
+  match. Use the Edit tool for those.
+- Verified: build clean; 60 unit tests; 23/23 integration checks; `AllTaskbars` 4/4 runs;
+  settings window screenshot checked (new rows fit); isolation guard clean.

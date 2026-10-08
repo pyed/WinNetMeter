@@ -967,6 +967,86 @@ void TestEmbedSetting() {
     printf("PASS: TestEmbedSetting\n");
 }
 
+void TestAllTaskbarsSetting() {
+    const wchar_t* path = L".\\test_all_taskbars_settings.ini";
+    AppSettings defaults;
+    assert(defaults.allTaskbars == 0);
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-796", path);   // a 0.1.x file
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.allTaskbars == 0);
+
+    for (int all : { 1, 0 }) {
+        DeleteFileW(path);
+        AppSettings saved;
+        saved.allTaskbars = all;
+        saved.embedInTaskbar = 1 - all;   // independent switches
+        assert(SaveSettingsCustom(&saved, path));
+        AppSettings roundTrip;
+        LoadSettingsCustom(&roundTrip, path);
+        assert(roundTrip.allTaskbars == all && roundTrip.embedInTaskbar == 1 - all);
+    }
+    DeleteFileW(path);
+    printf("PASS: TestAllTaskbarsSetting\n");
+}
+
+// Secondary taskbars: edge and auto-hide state from geometry alone, and the
+// primary's notification area mirrored onto them.
+void TestSecondaryTaskbarGeometry() {
+    const RECT monitor = { 1920, 0, 3840, 1080 };
+    assert(TaskbarEdgeOnMonitor({ 1920, 1032, 3840, 1080 }, monitor) == ABE_BOTTOM);
+    assert(TaskbarEdgeOnMonitor({ 1920, 0, 3840, 48 }, monitor) == ABE_TOP);
+    assert(TaskbarEdgeOnMonitor({ 1920, 0, 1968, 1080 }, monitor) == ABE_LEFT);
+    assert(TaskbarEdgeOnMonitor({ 3792, 0, 3840, 1080 }, monitor) == ABE_RIGHT);
+    const RECT negative = { -1920, -200, 0, 880 };
+    assert(TaskbarEdgeOnMonitor({ -1920, 832, 0, 880 }, negative) == ABE_BOTTOM);
+
+    // Auto-hide slides a taskbar off its edge, leaving a sliver: same edge, not shown.
+    const RECT slidDown = { 1920, 1078, 3840, 1126 };
+    assert(TaskbarEdgeOnMonitor(slidDown, monitor) == ABE_BOTTOM);
+    assert(!IsTaskbarMostlyOnMonitor(slidDown, ABE_BOTTOM, monitor));
+    const RECT slidUp = { 1920, -46, 3840, 2 };
+    assert(TaskbarEdgeOnMonitor(slidUp, monitor) == ABE_TOP);
+    assert(!IsTaskbarMostlyOnMonitor(slidUp, ABE_TOP, monitor));
+    assert(IsTaskbarMostlyOnMonitor({ 1920, 1032, 3840, 1080 }, ABE_BOTTOM, monitor));
+    assert(IsTaskbarMostlyOnMonitor({ 1920, 1056, 3840, 1104 }, ABE_BOTTOM, monitor));   // half shown
+    assert(!IsTaskbarMostlyOnMonitor({ 0, 1032, 1920, 1080 }, ABE_BOTTOM, monitor));    // other monitor
+
+    // The primary's notification area is 220 px at 96 DPI; a 150% secondary
+    // reserves the same logical length at its far end.
+    TaskbarLayout primary = {};
+    primary.taskbar = { 0, 1032, 1920, 1080 };
+    primary.edge = ABE_BOTTOM;
+    primary.tray = { 1700, 1032, 1920, 1080 };
+    const RECT secondary = { 1920, 1008, 4480, 1080 };
+    TaskbarLayout layout = {};
+    layout.taskbar = secondary;
+    layout.edge = ABE_BOTTOM;
+    layout.tray = MirrorTrayArea(primary, 96, secondary, ABE_BOTTOM, 144);
+    assert(layout.tray.left == 4480 - 330 && layout.tray.right == 4480);
+    assert(layout.tray.top == secondary.top && layout.tray.bottom == secondary.bottom);
+    RECT meter = CalculateAnchoredMeterRect(layout, 144, MeterAnchor::BesideTray, 0);
+    assert(meter.right == 4150 - 6);
+
+    // Without a known notification area there is nothing to mirror: the anchor
+    // falls back to the far end, as on any taskbar without one.
+    TaskbarLayout noTray = primary;
+    noTray.tray = {};
+    const RECT empty = MirrorTrayArea(noTray, 96, secondary, ABE_BOTTOM, 144);
+    assert(IsRectEmpty(&empty));
+
+    // Vertical taskbars mirror along their length.
+    TaskbarLayout right = {};
+    right.taskbar = { 1872, 0, 1920, 1080 };
+    right.edge = ABE_RIGHT;
+    right.tray = { 1872, 900, 1920, 1080 };
+    const RECT verticalSecondary = { 1920, 0, 1968, 1080 };
+    const RECT verticalTray = MirrorTrayArea(right, 96, verticalSecondary, ABE_LEFT, 96);
+    assert(verticalTray.top == 900 && verticalTray.bottom == 1080 && verticalTray.left == 1920);
+    printf("PASS: TestSecondaryTaskbarGeometry\n");
+}
+
 // Test 7: Taskbar-relative placement across edges, negative coordinates, and DPI
 void TestTaskbarPlacement() {
     const RECT bottomSecondary = { -1920, 1032, 0, 1080 };
@@ -1328,6 +1408,8 @@ int main() {
     TestMeterAnchors();
     TestAnchorSettings();
     TestEmbedSetting();
+    TestAllTaskbarsSetting();
+    TestSecondaryTaskbarGeometry();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();
     printf("ALL TESTS PASSED\n");

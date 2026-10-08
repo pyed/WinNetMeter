@@ -16,6 +16,7 @@ struct MeterState {
     int anchor = 1;               // MeterAnchor (overlay.h)
     int taskbarOffset = 0;        // logical px from the anchor
     bool embedded = false;        // a child of the taskbar instead of a topmost overlay
+    bool allTaskbars = false;     // also on secondary taskbars (other monitors)
 };
 
 // The taskbar meter runs on its own thread: it owns the meter windows, renders

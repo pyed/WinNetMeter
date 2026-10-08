@@ -84,6 +84,7 @@ enum {
     ID_SET_ANCHOR_LBL = 2033,
     ID_SET_ANCHOR_COMBO = 2034,
     ID_SET_EMBED_CHECK = 2035,
+    ID_SET_ALL_TASKBARS_CHECK = 2036,
 };
 
 // Order of the "Meter position" choices, mapped to AppSettings::meterAnchor.
@@ -138,7 +139,7 @@ struct SettingsUiState {
     HWND hwndLblUnit = nullptr, hwndComboUnit = nullptr;
     HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
     HWND hwndCheckWidget = nullptr, hwndCheckTray = nullptr, hwndCheckStartup = nullptr;
-    HWND hwndCheckEmbed = nullptr;
+    HWND hwndCheckEmbed = nullptr, hwndCheckAllTaskbars = nullptr;
     HWND hwndBtnApply = nullptr, hwndBtnExit = nullptr;
     bool refreshing = false;
 };
@@ -267,6 +268,7 @@ static void UpdateMeter() {
     state.anchor = g_settings.meterAnchor;
     state.taskbarOffset = g_settings.taskbarOffset;
     state.embedded = g_settings.embedInTaskbar != 0;
+    state.allTaskbars = g_settings.allTaskbars != 0;
     PushMeterState(state);
 }
 
@@ -322,7 +324,7 @@ static void RelayoutMainControls(int dpi) {
         { g_settingsUi.hwndCheckWidget,    370, 397, 155,  22 },
         { g_settingsUi.hwndCheckTray,      535, 397, 170,  22 },
         { g_settingsUi.hwndCheckStartup,   370, 427, 155,  22 },
-        // y=427 right: all-taskbars checkbox
+        { g_settingsUi.hwndCheckAllTaskbars, 535, 427, 170, 22 },
         { g_settingsUi.hwndCheckEmbed,     370, 457, 330,  22 },
         { g_settingsUi.hwndBtnApply,       540, 505,  75,  28 },
         { g_settingsUi.hwndBtnExit,        625, 505,  75,  28 },
@@ -381,7 +383,8 @@ static void RefreshFontsAndRelayout(int dpi) {
         g_settingsUi.hwndComboUnit, g_settingsUi.hwndLblDecimals,
         g_settingsUi.hwndComboDecimals, g_settingsUi.hwndCheckWidget,
         g_settingsUi.hwndCheckTray, g_settingsUi.hwndCheckStartup,
-        g_settingsUi.hwndCheckEmbed, g_settingsUi.hwndBtnApply, g_settingsUi.hwndBtnExit,
+        g_settingsUi.hwndCheckEmbed, g_settingsUi.hwndCheckAllTaskbars,
+        g_settingsUi.hwndBtnApply, g_settingsUi.hwndBtnExit,
     };
     for (HWND control : settingsControls) {
         if (control) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontLabel), TRUE);
@@ -879,6 +882,8 @@ static void CreateSettingsControls(HWND hwnd) {
     state.hwndCheckStartup = CreateMainButton(hwnd, L"Start with Windows", ID_SET_STARTUP_CHECK, BS_AUTOCHECKBOX);
     state.hwndCheckEmbed = CreateMainButton(hwnd, L"Embed in taskbar (stays visible over Start)",
                                             ID_SET_EMBED_CHECK, BS_AUTOCHECKBOX);
+    state.hwndCheckAllTaskbars = CreateMainButton(hwnd, L"Show on all taskbars", ID_SET_ALL_TASKBARS_CHECK,
+                                                  BS_AUTOCHECKBOX);
     state.hwndBtnApply = CreateMainButton(hwnd, L"Apply", ID_SET_SAVE_BTN, BS_DEFPUSHBUTTON);
     state.hwndBtnExit = CreateMainButton(hwnd, L"Exit", ID_EXIT_APP);
     RefreshSettingsControls();
@@ -907,6 +912,7 @@ static void RefreshSettingsControls() {
     SendMessageW(state.hwndCheckTray, BM_SETCHECK, g_settings.showTrayIcon ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(state.hwndCheckStartup, BM_SETCHECK, g_settings.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(state.hwndCheckEmbed, BM_SETCHECK, g_settings.embedInTaskbar ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(state.hwndCheckAllTaskbars, BM_SETCHECK, g_settings.allTaskbars ? BST_CHECKED : BST_UNCHECKED, 0);
     state.refreshing = false;
 }
 
@@ -971,6 +977,7 @@ static bool ApplySettings(HWND hwnd) {
     state.tempSettings.showTrayIcon = SendMessageW(state.hwndCheckTray, BM_GETCHECK, 0, 0) == BST_CHECKED;
     state.tempSettings.startWithWindows = SendMessageW(state.hwndCheckStartup, BM_GETCHECK, 0, 0) == BST_CHECKED;
     state.tempSettings.embedInTaskbar = SendMessageW(state.hwndCheckEmbed, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    state.tempSettings.allTaskbars = SendMessageW(state.hwndCheckAllTaskbars, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (!HasUiEntryPoint(state.tempSettings)) {
         MessageBoxW(hwnd, L"Keep either the taskbar meter or tray icon enabled so WinNetMeter can be opened.",
                     L"WinNetMeter", MB_OK | MB_ICONWARNING);

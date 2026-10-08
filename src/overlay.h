@@ -112,6 +112,51 @@ inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, Me
     return { x, y, x + width, y + height };
 }
 
+// The edge a taskbar is docked to, from its rectangle and its monitor's
+// (secondary taskbars have no appbar message to ask). An auto-hidden taskbar
+// that has slid off its edge still resolves to that edge.
+inline UINT TaskbarEdgeOnMonitor(const RECT& taskbar, const RECT& monitor) {
+    if (taskbar.right - taskbar.left >= taskbar.bottom - taskbar.top) {
+        return taskbar.top - monitor.top < monitor.bottom - taskbar.bottom ? ABE_TOP : ABE_BOTTOM;
+    }
+    return taskbar.left - monitor.left < monitor.right - taskbar.right ? ABE_LEFT : ABE_RIGHT;
+}
+
+// Whether at least half of a taskbar's thickness is on its monitor; an
+// auto-hidden one leaves only a sliver.
+inline bool IsTaskbarMostlyOnMonitor(const RECT& taskbar, UINT edge, const RECT& monitor) {
+    RECT visible = {};
+    if (!IntersectRect(&visible, &taskbar, &monitor)) return false;
+    const bool horizontal = edge == ABE_TOP || edge == ABE_BOTTOM;
+    const int thickness = horizontal ? taskbar.bottom - taskbar.top : taskbar.right - taskbar.left;
+    const int shown = horizontal ? visible.bottom - visible.top : visible.right - visible.left;
+    return shown * 2 >= thickness;
+}
+
+// Secondary taskbars have no notification-area window (on Windows 11 their
+// clock has none either), but the meter must not cover their far end. Reserve
+// the same logical length there as the primary's notification area takes, so
+// "next to the tray" sits the same distance from the end on every taskbar.
+// Empty when the primary's notification area is unknown.
+inline RECT MirrorTrayArea(const TaskbarLayout& primary, UINT primaryDpi,
+                           const RECT& taskbar, UINT edge, UINT dpi) {
+    RECT tray = {};
+    if (!IsUsableTaskbarPart(primary.tray, primary.taskbar)) return tray;
+    const bool primaryHorizontal = primary.edge == ABE_TOP || primary.edge == ABE_BOTTOM;
+    const int primaryLength = primaryHorizontal ? primary.taskbar.right - primary.tray.left
+                                                : primary.taskbar.bottom - primary.tray.top;
+    const int length = MulDiv(primaryLength, static_cast<int>(dpi ? dpi : 96),
+                              static_cast<int>(primaryDpi ? primaryDpi : 96));
+    if (length <= 0) return tray;
+    tray = taskbar;
+    if (edge == ABE_TOP || edge == ABE_BOTTOM) {
+        tray.left = taskbar.right - length;
+    } else {
+        tray.top = taskbar.bottom - length;
+    }
+    return tray;
+}
+
 // Icons take straight (not premultiplied) alpha, unlike UpdateLayeredWindow:
 // a 50% white pixel drawn over black must come out mid-grey (measured with
 // DrawIconEx; premultiplying here would halve every edge pixel again). The

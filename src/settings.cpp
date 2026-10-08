@@ -231,6 +231,7 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
         s->meterAnchor = METER_ANCHOR_TRAY;
     }
     s->embedInTaskbar = (GetPrivateProfileIntW(L"Overlay", L"Embed", 0, filePath) != 0) ? 1 : 0;
+    s->allTaskbars = (GetPrivateProfileIntW(L"Overlay", L"AllTaskbars", 0, filePath) != 0) ? 1 : 0;
 
     GetPrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"Auto", num, _countof(num), filePath);
     if (_wcsicmp(num, L"KB/s") == 0) {
@@ -317,6 +318,8 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
                        ? s->meterAnchor : METER_ANCHOR_TRAY];
     out += L"\r\nEmbed=";
     out += s->embedInTaskbar ? L"1" : L"0";
+    out += L"\r\nAllTaskbars=";
+    out += s->allTaskbars ? L"1" : L"0";
 
     const wchar_t* minimumUnit = L"Auto";
     if (s->minimumSpeedUnit == MinimumSpeedUnit::Kilobytes) minimumUnit = L"KB/s";
