@@ -9,9 +9,11 @@
 #include <limits.h>
 #include <string.h>
 #include <math.h>
+#include <initializer_list>
 #include <string>
 #include "../network.h"
 #include "../overlay.h"
+#include "../render.h"
 #include "../settings.h"
 
 static void AssertSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
@@ -620,6 +622,65 @@ void TestLocalizedSinceDate() {
     printf("PASS: TestLocalizedSinceDate\n");
 }
 
+void TestIconAlpha() {
+    // Synthetic white-on-black render: full, half and no coverage.
+    BYTE pixels[3 * 4] = { 255, 255, 255, 0,   128, 128, 128, 0,   0, 0, 0, 0 };
+    ApplyIconAlpha(pixels, 3, 1, 12, 1, RGB(10, 20, 30), RGB(0, 0, 0));
+    // Straight alpha: colour stays at full strength, alpha carries coverage (BGRA order).
+    assert(pixels[0] == 30 && pixels[1] == 20 && pixels[2] == 10 && pixels[3] == 255);
+    assert(pixels[4] == 30 && pixels[5] == 20 && pixels[6] == 10 && pixels[7] == 128);
+    assert(pixels[8] == 0 && pixels[9] == 0 && pixels[10] == 0 && pixels[11] == 0);
+    printf("PASS: TestIconAlpha\n");
+}
+
+void TestMeterIcon() {
+    assert(GetTrayIconSizeForDpi(96) == GetSystemMetricsForDpi(SM_CXSMICON, 96));
+    assert(GetTrayIconSizeForDpi(288) == GetSystemMetricsForDpi(SM_CXSMICON, 288));
+    assert(GetTrayIconSizeForDpi(288) > GetTrayIconSizeForDpi(96));
+
+    // The first icon allocates a few objects for the process's GDI and font
+    // caches (5 here, constant afterwards); measure from after that.
+    DestroyIcon(CreateMeterIcon(16, L"0B", L"0B", 0, 0));
+    DWORD gdiBefore = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    for (int size : { 16, 20, 24, 32, 48, 64 }) {
+        for (int round = 0; round < 25; ++round) {
+            HICON icon = CreateMeterIcon(size, L"999K", L"12M", RGB(255, 255, 255), RGB(0, 200, 255));
+            assert(icon != nullptr);
+            ICONINFO info = {};
+            assert(GetIconInfo(icon, &info));
+            BITMAP bm = {};
+            assert(GetObjectW(info.hbmColor, sizeof(bm), &bm) == sizeof(bm));
+            assert(bm.bmWidth == size && bm.bmHeight == size && bm.bmBitsPixel == 32);
+
+            // Transparent background with drawn text: some pixels opaque, corners clear.
+            std::string pixels(static_cast<size_t>(size) * size * 4, '\0');
+            BITMAPINFO bi = {};
+            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = size;
+            bi.bmiHeader.biHeight = -size;
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            HDC dc = GetDC(nullptr);
+            assert(GetDIBits(dc, info.hbmColor, 0, size, pixels.data(), &bi, DIB_RGB_COLORS) == size);
+            ReleaseDC(nullptr, dc);
+            int opaque = 0;
+            for (int i = 0; i < size * size; ++i) if (static_cast<BYTE>(pixels[i * 4 + 3]) > 0) ++opaque;
+            assert(opaque > 0 && opaque < size * size);
+            assert(static_cast<BYTE>(pixels[3]) == 0);
+
+            DeleteObject(info.hbmColor);
+            DeleteObject(info.hbmMask);
+            DestroyIcon(icon);
+        }
+    }
+    assert(CreateMeterIcon(4, L"1K", L"1K", 0, 0) == nullptr);
+    DWORD gdiAfter = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    printf("INFO: icon GDI objects %lu -> %lu over 150 icons\n", gdiBefore, gdiAfter);
+    assert(gdiAfter == gdiBefore);
+    printf("PASS: TestMeterIcon\n");
+}
+
 void TestMeterColors() {
     assert(ResolveMeterColor(METER_COLOR_AUTO, false) == RGB(255, 255, 255));
     assert(ResolveMeterColor(METER_COLOR_AUTO, true) == RGB(28, 28, 28));
@@ -1099,6 +1160,9 @@ void TestSettingsPathOverride() {
 }
 
 int main() {
+    // Unbuffered: a failing assert aborts without flushing, which would hide the
+    // diagnostics printed just before it.
+    setvbuf(stdout, nullptr, _IONBF, 0);
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestSpeedFormatting();
     TestUnchangedIndependentFormatting();
@@ -1120,6 +1184,8 @@ int main() {
     TestBitRateFormatting();
     TestSpeedUnitsSetting();
     TestMeterColors();
+    TestIconAlpha();
+    TestMeterIcon();
     TestLocalizedSinceDate();
     TestDefaultRouteLookup();
     TestTaskbarPlacement();

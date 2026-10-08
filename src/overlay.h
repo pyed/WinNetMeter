@@ -47,6 +47,29 @@ inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi
     return { x, y, x + width, y + height };
 }
 
+// Icons take straight (not premultiplied) alpha, unlike UpdateLayeredWindow:
+// a 50% white pixel drawn over black must come out mid-grey (measured with
+// DrawIconEx; premultiplying here would halve every edge pixel again). The
+// input is white-on-black text; colour channels get the full text colour and
+// alpha carries the coverage.
+inline void ApplyIconAlpha(BYTE* pixels, int width, int height, int stride,
+                           int splitY, COLORREF topColor, COLORREF bottomColor) {
+    for (int y = 0; y < height; ++y) {
+        const COLORREF color = y < splitY ? topColor : bottomColor;
+        BYTE* row = pixels + static_cast<std::size_t>(y) * static_cast<std::size_t>(stride);
+        for (int x = 0; x < width; ++x) {
+            BYTE* pixel = row + x * 4;
+            BYTE coverage = pixel[0];
+            if (pixel[1] > coverage) coverage = pixel[1];
+            if (pixel[2] > coverage) coverage = pixel[2];
+            pixel[0] = coverage ? GetBValue(color) : 0;
+            pixel[1] = coverage ? GetGValue(color) : 0;
+            pixel[2] = coverage ? GetRValue(color) : 0;
+            pixel[3] = coverage;
+        }
+    }
+}
+
 inline void ApplyOverlayAlpha(BYTE* pixels, int width, int height, int stride,
                               int splitY, COLORREF topColor, COLORREF bottomColor) {
     for (int y = 0; y < height; ++y) {

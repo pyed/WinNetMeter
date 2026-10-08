@@ -15,6 +15,7 @@
 #include <string>
 #include "network.h"
 #include "overlay.h"
+#include "render.h"
 #include "settings.h"
 #include "version.h"
 
@@ -406,70 +407,15 @@ static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
 }
 
 // ---- Tray Icon Generation ----------------------------------------------------
+// Drawn at the size the shell uses for the taskbar's DPI, so it is not rescaled
+// (a fixed 16 px icon was tripled into a blur at 300%).
 static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpeed) {
-    const int w = 16;
-    const int h = 16;
-
-    HDC hdcScreen = GetDC(nullptr);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = h;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* pBits = nullptr;
-    HBITMAP hbmpColor = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    HBITMAP hbmpOld = static_cast<HBITMAP>(SelectObject(hdcMem, hbmpColor));
-
-    // Fill background with dark gray
-    RECT rc = { 0, 0, w, h };
-    HBRUSH hbg = CreateSolidBrush(RGB(30, 30, 30));
-    FillRect(hdcMem, &rc, hbg);
-    DeleteObject(hbg);
-
-    // Render speed text with Arial 6pt Bold
-    HFONT hFont = CreateFontW(-8, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-    HFONT hOldFont = static_cast<HFONT>(SelectObject(hdcMem, hFont));
-
-    SetBkMode(hdcMem, TRANSPARENT);
-
-    // Download speed (top half) - configured color
-    SetTextColor(hdcMem, ResolveMeterColor(g_settings.down, g_taskbarLight));
-    RECT rcDown = { 0, 0, w, h / 2 };
-    DrawTextW(hdcMem, downSpeed, -1, &rcDown, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    // Upload speed (bottom half) - configured color
-    SetTextColor(hdcMem, ResolveMeterColor(g_settings.up, g_taskbarLight));
-    RECT rcUp = { 0, h / 2, w, h };
-    DrawTextW(hdcMem, upSpeed, -1, &rcUp, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    SelectObject(hdcMem, hOldFont);
-    DeleteObject(hFont);
-
-    // Initialize 1-bit monochrome mask (all 0s = fully opaque color bitmap)
-    BYTE maskBits[16 * 2] = { 0 };
-    HBITMAP hbmpMask = CreateBitmap(w, h, 1, 1, maskBits);
-
-    ICONINFO ii = {};
-    ii.fIcon = TRUE;
-    ii.hbmMask = hbmpMask;
-    ii.hbmColor = hbmpColor;
-
-    HICON hIcon = CreateIconIndirect(&ii);
-
-    SelectObject(hdcMem, hbmpOld);
-    DeleteObject(hbmpColor);
-    DeleteObject(hbmpMask);
-    DeleteDC(hdcMem);
-    ReleaseDC(nullptr, hdcScreen);
-
-    return hIcon;
+    HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+    UINT dpi = taskbar ? GetDpiForWindow(taskbar) : 0;
+    if (dpi == 0) dpi = static_cast<UINT>(g_currentDpi);
+    return CreateMeterIcon(GetTrayIconSizeForDpi(dpi), downSpeed, upSpeed,
+                           ResolveMeterColor(g_settings.down, g_taskbarLight),
+                           ResolveMeterColor(g_settings.up, g_taskbarLight));
 }
 
 static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {

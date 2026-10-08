@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M6** (theme-aware colours).
+- Last completed milestone: **M7** (DPI-sized tray icon).
 
 ## 0.2.0 milestone plan
 
@@ -26,7 +26,7 @@ refactor lands with no behavior change before features are built on it.
       remembered manual choice, re-evaluated while running.
 - [x] **M5** Formatting: bits-per-second option; locale-aware "since" date.
 - [x] **M6** Theme-aware default meter colours, with a settings-version migration.
-- [ ] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
+- [x] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
 - [ ] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
       hooks) to a dedicated thread fed by state snapshots. No behavior change.
 - [ ] **M9** Placement anchors (next to tray / after apps / left edge / legacy) with offsets
@@ -241,3 +241,21 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   `ThemeColors` (legacy migration, pin on screen colour computed from the same registry value,
   back to auto).
 - Verified: build clean; 50 unit tests; 19/19 integration checks; isolation guard clean.
+
+### M7: DPI-sized tray icon (2026-10-08)
+- New `src/render.{h,cpp}` (added to `build.bat` and `run_tests.bat`, so icon rendering is
+  unit-testable): `GetTrayIconSizeForDpi` (`SM_CXSMICON` for a DPI) and `CreateMeterIcon`
+  (two lines, transparent background, largest bold Segoe UI that fits, clipped below a third
+  of the height). `main.cpp` sizes it for the taskbar window's DPI.
+- Measured, not assumed: `CreateIconIndirect` icons take **straight** alpha (50% white over
+  black came out 128; a premultiplied pixel came out 64). Hence `ApplyIconAlpha` in
+  `overlay.h`, separate from the premultiplied `ApplyOverlayAlpha` used for layered windows.
+- The old icon used `DEFAULT_QUALITY` text on an opaque dark square, which renders ClearType
+  colour fringes; scaled 3x at 300% it was unreadable. A side-by-side render confirmed the
+  new 48 px icon is crisp.
+- Tests: `TestIconAlpha`, `TestMeterIcon` (sizes 16..64, 32-bit, transparent corners, drawn
+  text, and no GDI growth over 150 icons). First run of that test failed: the first icon
+  allocates 5 GDI objects for process-wide GDI/font caches. A probe showed the count flat
+  across 1000 further icons (no leak), so the test now warms up first. Unit test stdout is
+  unbuffered so diagnostics print before an `assert` aborts.
+- Verified: build clean; 52 unit tests; 19/19 integration checks; isolation guard clean.
