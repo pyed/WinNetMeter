@@ -551,8 +551,18 @@ function Wait-IniInt([string]$Section, [string]$Key, [int]$Expected, [int]$Timeo
 
 function Get-RunningAppProcesses {
     @(Get-Process -Name WinNetMeter -ErrorAction SilentlyContinue | Where-Object {
-        try { $_.Path -eq $exePath } catch { $false }
+        try { -not $_.HasExited -and $_.Path -eq $exePath } catch { $false }
     })
+}
+
+# A killed instance can stay listed for a moment while Windows tears it down
+# (seen on CI: still there 0.25 s after the previous check stopped it).
+function Wait-NoRunningApp([int]$TimeoutMs = 5000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    while (@(Get-RunningAppProcesses).Count -gt 0 -and [Environment]::TickCount -lt $deadline) {
+        Start-Sleep -Milliseconds 50
+    }
+    @(Get-RunningAppProcesses).Count -eq 0
 }
 
 function Get-EmbeddedMeters([System.Diagnostics.Process]$Process) {
@@ -576,7 +586,7 @@ function Wait-AppWindows([System.Diagnostics.Process]$Process) {
 }
 
 function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n", [switch]$KeepSettings) {
-    Assert-True (@(Get-RunningAppProcesses).Count -eq 0) 'A WinNetMeter process from this build is already running'
+    Assert-True (Wait-NoRunningApp) 'A WinNetMeter process from this build is already running'
     if (-not $KeepSettings) {
         [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
         [IO.File]::WriteAllText($settingsPath, $SettingsContent)
@@ -602,7 +612,9 @@ function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n
 function Stop-TestApp($Session) {
     if (-not $Session.Process.HasExited) {
         Stop-Process -Id $Session.Process.Id -Force -ErrorAction SilentlyContinue
-        Wait-Process -Id $Session.Process.Id -Timeout 5 -ErrorAction SilentlyContinue
+        # Wait on the process handle itself: Wait-Process -Id can return while the
+        # process is still being torn down.
+        [void]$Session.Process.WaitForExit(5000)
     }
 }
 
