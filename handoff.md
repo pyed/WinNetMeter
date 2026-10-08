@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M4** (automatic adapter selection).
+- Last completed milestone: **M5** (bits per second, localized date).
 
 ## 0.2.0 milestone plan
 
@@ -24,7 +24,7 @@ refactor lands with no behavior change before features are built on it.
       drop the runtime DPI call; `Metadata` check asserts the manifest.
 - [x] **M4** Adapter selection: "Automatic" mode that follows the default route (new default),
       remembered manual choice, re-evaluated while running.
-- [ ] **M5** Formatting: bits-per-second option; locale-aware "since" date.
+- [x] **M5** Formatting: bits-per-second option; locale-aware "since" date.
 - [ ] **M6** Theme-aware default meter colours, with a settings-version migration.
 - [ ] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
 - [ ] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
@@ -202,3 +202,21 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   adapter (compared against `GetBestInterface` + .NET; exercised here: "Ethernet"), manual
   choice saved and restored across a restart, switching back saves `auto`.
 - Verified: build clean; 44 unit tests; 17/17 integration checks; isolation guard clean.
+
+### M5: bits per second and localized date (2026-10-08)
+- `FormatSpeed`/`FormatCompact` take `bool bits = false`. Bits use decimal multiples
+  (`bps/Kbps/Mbps/Gbps`, 1 Mbps = 10^6 bit/s); the minimum-unit floor maps to Kbps/Mbps/Gbps.
+  Compact bits are `800b`, `1K`, `100M`; the multiply saturates instead of wrapping. The
+  byte path is unchanged (its tests are untouched).
+- Setting `[Overlay] SpeedUnits=bytes|bits` (`AppSettings::speedBits`; missing/invalid ->
+  bytes). UI: "Show speed in" combo (IDs 2029/2030); the minimum-unit combo relabels its
+  choices in the chosen units (`RelabelMinimumUnitChoices`); stored values are unchanged.
+- `FormatLifetimeSinceDate` uses `GetDateFormatEx(DATE_SHORTDATE)` with an optional locale
+  (unit tests pin `en-GB`/`en-US`/`de-DE`); buffers widened for long formats.
+- Settings panel laid out in its final shape now (window height 490 -> 590 logical). Free
+  slots: y=322 for the M9 position row, y=427 right for M11, y=457 for M10.
+- Tests: `TestBitRateFormatting`, `TestSpeedUnitsSetting`, `TestLocalizedSinceDate`;
+  integration `SpeedUnits`; `CustomizationTotals` computes its expected date with the same
+  API (it hardcoded DD/MM, which would fail on en-US runners).
+- Verified: build clean; 48 unit tests; 18/18 integration checks; isolation guard clean;
+  screenshot of the new window checked.

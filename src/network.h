@@ -26,11 +26,13 @@ struct AdapterInfo {
     DWORD type;                 // Interface type
 };
 
-// Formatting utilities matching C# Formatting.cs
+// Speed formatting. Bytes use binary multiples (1 KB/s = 1024 B/s). With bits,
+// rates use decimal multiples (1 Mbps = 1,000,000 bit/s), as ISPs and speed
+// tests quote them; minimumUnit then floors at Kbps/Mbps/Gbps.
 void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
-                 int decimalPlaces, wchar_t* out, size_t maxLen);
+                 int decimalPlaces, wchar_t* out, size_t maxLen, bool bits = false);
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen);
-void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen);
+void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen, bool bits = false);
 void FormatPrefixedSpeed(const wchar_t* prefix, const wchar_t* speed, wchar_t* out, size_t maxLen);
 
 // Live counter sampler keyed by stable NET_LUID.

@@ -43,6 +43,7 @@ struct AppSettings {
     int taskbarOffset = 0;             // Logical pixels from the automatic taskbar anchor
     MinimumSpeedUnit minimumSpeedUnit = MinimumSpeedUnit::Auto;
     int decimalPlaces = 2;
+    int speedBits = 0;                 // 0 = bytes (KB/s, binary), 1 = bits (Mbps, decimal)
     ULONGLONG lifetimeDownloaded = 0;
     ULONGLONG lifetimeUploaded = 0;
     wchar_t lifetimeSince[11] = L""; // YYYY-MM-DD
@@ -68,7 +69,9 @@ bool IsStartWithWindowsEnabled();
 bool SetStartWithWindowsEnabled(bool enabled);
 void AddLifetimeTraffic(AppSettings* s, ULONGLONG downloaded, ULONGLONG uploaded);
 void ResetLifetimeTotals(AppSettings* s);
-bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen);
+// Formats a YYYY-MM-DD date as the locale's short date; nullptr = the user's locale.
+bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen,
+                             const wchar_t* locale = nullptr);
 
 void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath);
 bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath);

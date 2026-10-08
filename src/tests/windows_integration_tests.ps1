@@ -3,7 +3,7 @@ param(
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
-                 'AdapterSelection')]
+                 'AdapterSelection', 'SpeedUnits')]
     [string]$Check
 )
 
@@ -126,6 +126,23 @@ public static class WinNetMeterNative
     private static extern UIntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
     [DllImport("iphlpapi.dll")]
     public static extern uint GetBestInterface(uint destination, out uint index);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SYSTEMTIME
+    {
+        public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetDateFormatEx(string locale, uint flags, ref SYSTEMTIME date, string format,
+        StringBuilder buffer, int size, string calendar);
+
+    // The user's short date, exactly as the app formats it (DATE_SHORTDATE).
+    public static string ShortDate(int year, int month, int day)
+    {
+        var date = new SYSTEMTIME { Year = (ushort)year, Month = (ushort)month, Day = (ushort)day };
+        var buffer = new StringBuilder(80);
+        return GetDateFormatEx(null, 1, ref date, null, buffer, buffer.Capacity, null) > 0 ? buffer.ToString() : null;
+    }
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
     [DllImport("user32.dll")]
@@ -438,6 +455,8 @@ if ($Check -eq 'Imports') {
 
 $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`n"
+} elseif ($Check -eq 'SpeedUnits') {
+    "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
 } elseif ($Check -eq 'CustomizationTotals') {
     "[Overlay]`r`nShowWidget=1`r`nDownloadPrefix=x0044003A`r`nUploadPrefix=x0055003A`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`nFontFamily=Arial`r`nFontSize=11.0`r`nFontStyle=0`r`nTaskbarOffset=37`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n[Totals]`r`nDownloaded=8388608`r`nUploaded=3145728`r`nSince=2024-02-29`r`n"
 } else {
@@ -757,7 +776,8 @@ try {
             [void][WinNetMeterNative]::SendMessageTextW($upPrefix, 0x000D, [IntPtr]$text.Capacity, $text)
             Assert-True ($text.ToString() -eq 'U:') "Upload prefix did not load: '$text'"
 
-            foreach ($item in @(@(109, 'Total data since 29/02/2024'), @(111, '8.00 MB'), @(113, '3.00 MB'))) {
+            $since = 'Total data since ' + [WinNetMeterNative]::ShortDate(2024, 2, 29)
+            foreach ($item in @(@(109, $since), @(111, '8.00 MB'), @(113, '3.00 MB'))) {
                 [void]$text.Clear()
                 [void][WinNetMeterNative]::GetWindowTextW(
                     [WinNetMeterNative]::GetDlgItem($main.Handle, $item[0]), $text, $text.Capacity)
@@ -913,6 +933,31 @@ try {
             Select-ComboItem $main.Handle $combo 101 0
             Assert-True ((Get-IniString 'Network' 'Adapter') -eq 'auto') 'Switching back to Automatic was not saved'
             'ADAPTER_SELECTION_OK'
+        }
+        'SpeedUnits' {
+            $main = Get-AppWindow $session $mainClass
+            $units = [WinNetMeterNative]::GetDlgItem($main.Handle, 2030)
+            $minimum = [WinNetMeterNative]::GetDlgItem($main.Handle, 2018)
+            Assert-True ($units -ne [IntPtr]::Zero -and $minimum -ne [IntPtr]::Zero) 'Unit controls were not found'
+            $speedTexts = {
+                foreach ($id in @(102, 103)) {
+                    $text = New-Object Text.StringBuilder 64
+                    [void][WinNetMeterNative]::GetWindowTextW([WinNetMeterNative]::GetDlgItem($main.Handle, $id), $text, $text.Capacity)
+                    $text.ToString()
+                }
+            }
+
+            # Loaded as bits with a megabit floor and one decimal.
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($units, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero) -eq 1) 'Bits were not selected from the settings file'
+            Assert-True ((Get-ComboText $minimum 2) -eq 'Mbps') "Minimum-unit choices are not in bits: '$(Get-ComboText $minimum 2)'"
+            foreach ($text in (& $speedTexts)) { Assert-True ($text -match '^\d+\.\d (Mbps|Gbps)$') "Unexpected bit-rate text: '$text'" }
+
+            # Switching to bytes applies live, relabels the choices and is saved at once.
+            Select-ComboItem $main.Handle $units 2030 0
+            Assert-True ((Get-IniString 'Overlay' 'SpeedUnits') -eq 'bytes') 'Byte units were not saved'
+            Assert-True ((Get-ComboText $minimum 2) -eq 'MB/s') "Minimum-unit choices are not in bytes: '$(Get-ComboText $minimum 2)'"
+            foreach ($text in (& $speedTexts)) { Assert-True ($text -match '^\d+\.\d (MB|GB)/s$') "Unexpected byte-rate text: '$text'" }
+            'SPEED_UNITS_OK'
         }
     }
 } finally {

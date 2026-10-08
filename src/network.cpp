@@ -1,11 +1,46 @@
 #include "network.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <climits>
 #include <cmath>
 #include <cwchar>
 
+static void FormatBitRate(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
+                          int decimalPlaces, wchar_t* out, size_t maxLen) {
+    const double bitsPerSecond = static_cast<double>(bytesPerSecond) * 8.0;
+    int unit = 0;
+    if (bitsPerSecond >= 1e9) {
+        unit = 3;
+    } else if (bitsPerSecond >= 1e6) {
+        unit = 2;
+    } else if (bitsPerSecond >= 1e3) {
+        unit = 1;
+    }
+
+    int floor = static_cast<int>(minimumUnit);
+    if (floor < 0 || floor > 3) floor = 0;
+    if (floor > unit) unit = floor;
+
+    if (unit == 0) {
+        // Below 1 Kbps the byte count is under 125, so this cannot overflow.
+        swprintf_s(out, maxLen, L"%llu bps", static_cast<unsigned long long>(bytesPerSecond) * 8ULL);
+        return;
+    }
+
+    static constexpr double divisors[] = { 1.0, 1e3, 1e6, 1e9 };
+    static constexpr const wchar_t* suffixes[] = { L"bps", L"Kbps", L"Mbps", L"Gbps" };
+    int precision = ClampSpeedDecimalPlaces(decimalPlaces);
+    double scale = precision == 0 ? 1.0 : (precision == 1 ? 10.0 : 100.0);
+    double value = std::round(bitsPerSecond / divisors[unit] * scale) / scale;
+    swprintf_s(out, maxLen, L"%.*f %s", precision, value, suffixes[unit]);
+}
+
 void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
-                 int decimalPlaces, wchar_t* out, size_t maxLen) {
+                 int decimalPlaces, wchar_t* out, size_t maxLen, bool bits) {
+    if (bits) {
+        FormatBitRate(bytesPerSecond, minimumUnit, decimalPlaces, out, maxLen);
+        return;
+    }
     int unit = 0;
     if (bytesPerSecond >= 1024ULL * 1024 * 1024) {
         unit = 3;
@@ -46,7 +81,21 @@ void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen) {
     }
 }
 
-void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen) {
+void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen, bool bits) {
+    if (bits) {
+        // Same shape as bytes, decimal multiples; a lowercase b marks plain bits.
+        const unsigned long long rate = bytesPerSecond > ULLONG_MAX / 8 ? ULLONG_MAX : bytesPerSecond * 8ULL;
+        if (rate < 1000ULL) {
+            swprintf_s(out, maxLen, L"%llub", rate);
+        } else if (rate < 1000000ULL) {
+            swprintf_s(out, maxLen, L"%lluK", rate / 1000ULL);
+        } else if (rate < 1000000000ULL) {
+            swprintf_s(out, maxLen, L"%lluM", rate / 1000000ULL);
+        } else {
+            swprintf_s(out, maxLen, L"%lluG", rate / 1000000000ULL);
+        }
+        return;
+    }
     if (bytesPerSecond < 1024) {
         swprintf_s(out, maxLen, L"%lluB", static_cast<unsigned long long>(bytesPerSecond));
     } else if (bytesPerSecond < 1024ULL * 1024) {

@@ -78,6 +78,8 @@ enum {
     ID_SET_DOWN_PREFIX_EDIT = 2026,
     ID_SET_UP_PREFIX_LBL = 2027,
     ID_SET_UP_PREFIX_EDIT = 2028,
+    ID_SET_UNITS_LBL = 2029,
+    ID_SET_UNITS_COMBO = 2030,
 };
 
 // Long enough to swallow a burst of keystrokes, short enough that a settings
@@ -127,6 +129,7 @@ struct SettingsUiState {
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
     HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
     HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
+    HWND hwndLblUnits = nullptr, hwndComboUnits = nullptr;
     HWND hwndLblUnit = nullptr, hwndComboUnit = nullptr;
     HWND hwndLblDecimals = nullptr, hwndComboDecimals = nullptr;
     HWND hwndCheckWidget = nullptr, hwndCheckTray = nullptr, hwndCheckStartup = nullptr;
@@ -263,7 +266,7 @@ static void RelayoutMainControls(int dpi) {
         HWND hwnd;
         int x, y, w, h;
     } items[] = {
-        { g_hwndStatusGroup,               12,  12, 325, 375 },
+        { g_hwndStatusGroup,               12,  12, 325, 480 },
         { g_hwndIfaceLbl,                   28,  42, 110,  20 },
         { g_combo,                         140,  39, 180, 250 },
         { g_hwndDownTitle,                  28,  90, 140,  25 },
@@ -280,8 +283,8 @@ static void RelayoutMainControls(int dpi) {
         { g_hwndLifetimeUp,                 28, 310, 145,  25 },
         { g_hwndLifetimeUpValue,           180, 310, 140,  25 },
         { g_hwndLifetimeReset,             235, 342,  85,  26 },
-        { g_hwndAuthor,                     28, 405, 300,  38 },
-        { g_settingsUi.hwndGroup,          350,  12, 365, 375 },
+        { g_hwndAuthor,                     28, 505, 300,  38 },
+        { g_settingsUi.hwndGroup,          350,  12, 365, 480 },
         { g_settingsUi.hwndLblUpPrefix,    370,  42, 125,  25 },
         { g_settingsUi.hwndEditUpPrefix,   500,  38, 125,  25 },
         { g_settingsUi.hwndLblDownPrefix,  370,  77, 125,  25 },
@@ -292,20 +295,24 @@ static void RelayoutMainControls(int dpi) {
         { g_settingsUi.hwndBtnDown,        500, 143,  80,  25 },
         { g_settingsUi.hwndLblFont,        370, 182, 125,  25 },
         { g_settingsUi.hwndBtnFont,        500, 178,  80,  25 },
-        { g_settingsUi.hwndLblOffset,      370, 222, 125,  25 },
-        { g_settingsUi.hwndEditOffset,     500, 218,  58,  25 },
-        { g_settingsUi.hwndSpinOffset,     558, 218,  18,  25 },
-        { g_settingsUi.hwndLblOffsetUnit,  580, 222,  25,  25 },
-        { g_settingsUi.hwndBtnOffsetReset, 610, 218,  90,  25 },
+        { g_settingsUi.hwndLblUnits,       370, 222, 125,  25 },
+        { g_settingsUi.hwndComboUnits,     500, 218, 200, 120 },
         { g_settingsUi.hwndLblUnit,        370, 257, 125,  25 },
         { g_settingsUi.hwndComboUnit,      500, 253, 110, 120 },
         { g_settingsUi.hwndLblDecimals,    370, 292, 125,  25 },
-        { g_settingsUi.hwndComboDecimals, 500, 288,  80, 120 },
-        { g_settingsUi.hwndCheckWidget,    370, 327, 155,  22 },
-        { g_settingsUi.hwndCheckTray,      535, 327, 170,  22 },
-        { g_settingsUi.hwndCheckStartup,   370, 357, 170,  22 },
-        { g_settingsUi.hwndBtnApply,       540, 405,  75,  28 },
-        { g_settingsUi.hwndBtnExit,        625, 405,  75,  28 },
+        { g_settingsUi.hwndComboDecimals,  500, 288,  80, 120 },
+        // y=322: meter position row (anchor)
+        { g_settingsUi.hwndLblOffset,      370, 362, 125,  25 },
+        { g_settingsUi.hwndEditOffset,     500, 358,  58,  25 },
+        { g_settingsUi.hwndSpinOffset,     558, 358,  18,  25 },
+        { g_settingsUi.hwndLblOffsetUnit,  580, 362,  25,  25 },
+        { g_settingsUi.hwndBtnOffsetReset, 610, 358,  90,  25 },
+        { g_settingsUi.hwndCheckWidget,    370, 397, 155,  22 },
+        { g_settingsUi.hwndCheckTray,      535, 397, 170,  22 },
+        { g_settingsUi.hwndCheckStartup,   370, 427, 155,  22 },
+        // y=427 right: all-taskbars checkbox; y=457: embed-in-taskbar checkbox
+        { g_settingsUi.hwndBtnApply,       540, 505,  75,  28 },
+        { g_settingsUi.hwndBtnExit,        625, 505,  75,  28 },
     };
 
     for (const auto& item : items) {
@@ -358,7 +365,8 @@ static void RefreshFontsAndRelayout(int dpi) {
         g_settingsUi.hwndLblFont, g_settingsUi.hwndBtnFont,
         g_settingsUi.hwndLblOffset, g_settingsUi.hwndEditOffset,
         g_settingsUi.hwndSpinOffset, g_settingsUi.hwndLblOffsetUnit,
-        g_settingsUi.hwndBtnOffsetReset, g_settingsUi.hwndLblUnit,
+        g_settingsUi.hwndBtnOffsetReset, g_settingsUi.hwndLblUnits,
+        g_settingsUi.hwndComboUnits, g_settingsUi.hwndLblUnit,
         g_settingsUi.hwndComboUnit, g_settingsUi.hwndLblDecimals,
         g_settingsUi.hwndComboDecimals, g_settingsUi.hwndCheckWidget,
         g_settingsUi.hwndCheckTray, g_settingsUi.hwndCheckStartup,
@@ -380,12 +388,13 @@ static void RefreshFontsAndRelayout(int dpi) {
 static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
     g_currentDownBps = downBps;
     g_currentUpBps = upBps;
+    const bool bits = g_settings.speedBits != 0;
     FormatSpeed(downBps, g_settings.minimumSpeedUnit, g_settings.decimalPlaces,
-                g_szDownSpeed, _countof(g_szDownSpeed));
+                g_szDownSpeed, _countof(g_szDownSpeed), bits);
     FormatSpeed(upBps, g_settings.minimumSpeedUnit, g_settings.decimalPlaces,
-                g_szUpSpeed, _countof(g_szUpSpeed));
-    FormatCompact(downBps, g_szDownCompact, _countof(g_szDownCompact));
-    FormatCompact(upBps, g_szUpCompact, _countof(g_szUpCompact));
+                g_szUpSpeed, _countof(g_szUpSpeed), bits);
+    FormatCompact(downBps, g_szDownCompact, _countof(g_szDownCompact), bits);
+    FormatCompact(upBps, g_szUpCompact, _countof(g_szUpCompact), bits);
 
     if (g_hwndSpeedDown) SetWindowTextW(g_hwndSpeedDown, g_szDownSpeed);
     if (g_hwndSpeedUp) SetWindowTextW(g_hwndSpeedUp, g_szUpSpeed);
@@ -1059,10 +1068,10 @@ static void UpdateTotalValues() {
     FormatBytes(g_settings.lifetimeUploaded, text, _countof(text));
     if (g_hwndLifetimeUpValue) SetWindowTextW(g_hwndLifetimeUpValue, text);
 
-    wchar_t date[16] = {};
-    wchar_t title[64] = L"Total data";
+    wchar_t date[80] = {};   // the user's short-date format; some locales are long
+    wchar_t title[128] = L"Total data";
     if (FormatLifetimeSinceDate(g_settings.lifetimeSince, date, _countof(date))) {
-        swprintf_s(title, L"Total data since %s", date);
+        _snwprintf_s(title, _countof(title), _TRUNCATE, L"Total data since %s", date);
     }
     if (g_hwndLifetimeTitle) SetWindowTextW(g_hwndLifetimeTitle, title);
 }
@@ -1105,6 +1114,22 @@ static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
         if (lf.lfStrikeOut) style |= 8;
         s->fontStyle = style;
     }
+}
+
+// The minimum-unit choices read in the selected units; the stored value is the
+// same index either way (Auto, kilo, mega, giga).
+static void RelabelMinimumUnitChoices(bool bits) {
+    HWND combo = g_settingsUi.hwndComboUnit;
+    if (!combo) return;
+    static const wchar_t* const bytesChoices[] = { L"Auto", L"KB/s", L"MB/s", L"GB/s" };
+    static const wchar_t* const bitsChoices[] = { L"Auto", L"Kbps", L"Mbps", L"Gbps" };
+    const wchar_t* const* choices = bits ? bitsChoices : bytesChoices;
+    int selection = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < 4; ++i) {
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choices[i]));
+    }
+    SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(selection), 0);
 }
 
 static HWND CreateMainButton(HWND parent, const wchar_t* text, int id, DWORD style = BS_PUSHBUTTON) {
@@ -1163,16 +1188,24 @@ static void CreateSettingsControls(HWND hwnd) {
     SendMessageW(state.hwndSpinOffset, UDM_SETBUDDY,
                  reinterpret_cast<WPARAM>(state.hwndEditOffset), 0);
 
+    state.hwndLblUnits = CreateMainLabel(hwnd, L"Show speed in:", ID_SET_UNITS_LBL);
+    state.hwndComboUnits = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UNITS_COMBO)), g_hInst, nullptr);
+    const wchar_t* unitsChoices[] = { L"Bytes (KB/s, MB/s)", L"Bits (Kbps, Mbps)" };
+    for (const wchar_t* choice : unitsChoices) {
+        SendMessageW(state.hwndComboUnits, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice));
+    }
+
     state.hwndLblUnit = CreateMainLabel(hwnd, L"Minimum speed unit:", ID_SET_UNIT_LBL);
     state.hwndComboUnit = CreateWindowExW(
         0, L"COMBOBOX", nullptr,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
         0, 0, 0, 0, hwnd,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_UNIT_COMBO)), g_hInst, nullptr);
-    const wchar_t* unitChoices[] = { L"Auto", L"KB/s", L"MB/s", L"GB/s" };
-    for (const wchar_t* choice : unitChoices) {
-        SendMessageW(state.hwndComboUnit, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice));
-    }
+    RelabelMinimumUnitChoices(false);
 
     state.hwndLblDecimals = CreateMainLabel(hwnd, L"Decimal places:", ID_SET_DECIMALS_LBL);
     state.hwndComboDecimals = CreateWindowExW(
@@ -1201,6 +1234,8 @@ static void RefreshSettingsControls() {
     SetWindowTextW(state.hwndEditDownPrefix, g_settings.downPrefix);
     SetWindowTextW(state.hwndEditUpPrefix, g_settings.upPrefix);
     SendMessageW(state.hwndSpinOffset, UDM_SETPOS32, 0, static_cast<LPARAM>(g_settings.taskbarOffset));
+    SendMessageW(state.hwndComboUnits, CB_SETCURSEL, g_settings.speedBits ? 1 : 0, 0);
+    RelabelMinimumUnitChoices(g_settings.speedBits != 0);
     SendMessageW(state.hwndComboUnit, CB_SETCURSEL, static_cast<WPARAM>(g_settings.minimumSpeedUnit), 0);
     SendMessageW(state.hwndComboDecimals, CB_SETCURSEL, g_settings.decimalPlaces, 0);
     SendMessageW(state.hwndCheckWidget, BM_SETCHECK, g_settings.showWidget ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1224,6 +1259,7 @@ static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmedia
     g_settings.taskbarOffset = state.tempSettings.taskbarOffset;
     g_settings.minimumSpeedUnit = state.tempSettings.minimumSpeedUnit;
     g_settings.decimalPlaces = state.tempSettings.decimalPlaces;
+    g_settings.speedBits = state.tempSettings.speedBits;
     if (persistImmediately) {
         PersistSettingsNow();
     } else {
@@ -1252,8 +1288,10 @@ static bool ApplySettings(HWND hwnd) {
     }
 
     state.tempSettings.taskbarOffset = offset;
+    int units = static_cast<int>(SendMessageW(state.hwndComboUnits, CB_GETCURSEL, 0, 0));
     int unit = static_cast<int>(SendMessageW(state.hwndComboUnit, CB_GETCURSEL, 0, 0));
     int decimals = static_cast<int>(SendMessageW(state.hwndComboDecimals, CB_GETCURSEL, 0, 0));
+    if (units == 0 || units == 1) state.tempSettings.speedBits = units;
     if (unit >= 0 && unit <= 3) state.tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(unit);
     if (decimals >= SPEED_DECIMAL_PLACES_MIN && decimals <= SPEED_DECIMAL_PLACES_MAX) {
         state.tempSettings.decimalPlaces = decimals;
@@ -1324,6 +1362,13 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
         int selection = static_cast<int>(SendMessageW(state.hwndComboUnit, CB_GETCURSEL, 0, 0));
         if (selection >= 0 && selection <= 3) {
             state.tempSettings.minimumSpeedUnit = static_cast<MinimumSpeedUnit>(selection);
+            ApplyLiveMeterSettings();
+        }
+    } else if (id == ID_SET_UNITS_COMBO && code == CBN_SELCHANGE) {
+        int selection = static_cast<int>(SendMessageW(state.hwndComboUnits, CB_GETCURSEL, 0, 0));
+        if (selection == 0 || selection == 1) {
+            state.tempSettings.speedBits = selection;
+            RelabelMinimumUnitChoices(selection == 1);
             ApplyLiveMeterSettings();
         }
     } else if (id == ID_SET_DECIMALS_COMBO && code == CBN_SELCHANGE) {
@@ -1613,7 +1658,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     ReleaseDC(nullptr, hdcScreen);
 
     int w = ScaleDpi(730, g_currentDpi);
-    int h = ScaleDpi(490, g_currentDpi);
+    int h = ScaleDpi(590, g_currentDpi);
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 

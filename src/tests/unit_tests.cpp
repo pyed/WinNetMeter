@@ -136,7 +136,7 @@ void TestPrefixesAndLifetimeTotals() {
     assert(loaded.lifetimeDownloaded == saved.lifetimeDownloaded);
     assert(loaded.lifetimeUploaded == saved.lifetimeUploaded);
     assert(wcscmp(loaded.lifetimeSince, L"2024-02-29") == 0);
-    assert(FormatLifetimeSinceDate(loaded.lifetimeSince, text, _countof(text)));
+    assert(FormatLifetimeSinceDate(loaded.lifetimeSince, text, _countof(text), L"en-GB"));
     assert(wcscmp(text, L"29/02/2024") == 0);
     assert(!FormatLifetimeSinceDate(L"2023-02-29", text, _countof(text)));
 
@@ -540,6 +540,82 @@ void TestAdapterRebindAndNoFallback() {
     assert(ChooseAdapter(mockList, 2, false, none, selectedLuid, L"VPN") == -1);
 
     printf("PASS: TestAdapterRebindAndNoFallback\n");
+}
+
+static void AssertBits(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
+                       int decimalPlaces, const wchar_t* expected) {
+    wchar_t buf[64];
+    FormatSpeed(bytesPerSecond, minimumUnit, decimalPlaces, buf, _countof(buf), true);
+    if (wcscmp(buf, expected) != 0) printf("FAIL: bits %llu -> '%ls', expected '%ls'\n", bytesPerSecond, buf, expected);
+    assert(wcscmp(buf, expected) == 0);
+}
+
+void TestBitRateFormatting() {
+    // Decimal multiples: 125 B/s = 1000 bit/s = 1 Kbps.
+    AssertBits(0, MinimumSpeedUnit::Auto, 2, L"0 bps");
+    AssertBits(100, MinimumSpeedUnit::Auto, 2, L"800 bps");
+    AssertBits(124, MinimumSpeedUnit::Auto, 2, L"992 bps");
+    AssertBits(125, MinimumSpeedUnit::Auto, 2, L"1.00 Kbps");
+    AssertBits(1250000, MinimumSpeedUnit::Auto, 2, L"10.00 Mbps");
+    AssertBits(12500000, MinimumSpeedUnit::Auto, 1, L"100.0 Mbps");
+    AssertBits(125000000, MinimumSpeedUnit::Auto, 0, L"1 Gbps");
+    AssertBits(0, MinimumSpeedUnit::Kilobytes, 2, L"0.00 Kbps");
+    AssertBits(125, MinimumSpeedUnit::Megabytes, 2, L"0.00 Mbps");
+    AssertBits(62500, MinimumSpeedUnit::Megabytes, 1, L"0.5 Mbps");
+    AssertBits(250000000, MinimumSpeedUnit::Kilobytes, 2, L"2.00 Gbps");
+    wchar_t buf[64];
+    FormatSpeed(ULLONG_MAX, MinimumSpeedUnit::Auto, 2, buf, _countof(buf), true);
+    assert(wcsstr(buf, L" Gbps") != nullptr);
+    // The byte path is untouched by the flag's default.
+    FormatSpeed(1048576, MinimumSpeedUnit::Auto, 2, buf, _countof(buf));
+    assert(wcscmp(buf, L"1.00 MB/s") == 0);
+    printf("PASS: TestBitRateFormatting\n");
+
+    FormatCompact(100, buf, _countof(buf), true);
+    assert(wcscmp(buf, L"800b") == 0);
+    FormatCompact(125, buf, _countof(buf), true);
+    assert(wcscmp(buf, L"1K") == 0);
+    FormatCompact(12500000, buf, _countof(buf), true);
+    assert(wcscmp(buf, L"100M") == 0);
+    FormatCompact(125000000, buf, _countof(buf), true);
+    assert(wcscmp(buf, L"1G") == 0);
+    FormatCompact(ULLONG_MAX, buf, _countof(buf), true);   // saturates, no wraparound
+    assert(wcscmp(buf, L"18446744073G") == 0);
+    printf("PASS: TestCompactBitRateFormatting\n");
+}
+
+void TestSpeedUnitsSetting() {
+    const wchar_t* path = L".\\test_speed_units.ini";
+    DeleteFileW(path);
+    AppSettings s;
+    assert(s.speedBits == 0);
+    s.speedBits = 1;
+    assert(SaveSettingsCustom(&s, path));
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.speedBits == 1);
+    for (const wchar_t* value : { static_cast<const wchar_t*>(nullptr), L"bytes", L"nonsense" }) {
+        WritePrivateProfileStringW(L"Overlay", L"SpeedUnits", value, path);
+        LoadSettingsCustom(&loaded, path);
+        assert(loaded.speedBits == 0);
+    }
+    DeleteFileW(path);
+    printf("PASS: TestSpeedUnitsSetting\n");
+}
+
+void TestLocalizedSinceDate() {
+    wchar_t text[80] = {};
+    assert(FormatLifetimeSinceDate(L"2024-02-29", text, _countof(text), L"en-GB"));
+    assert(wcscmp(text, L"29/02/2024") == 0);
+    assert(FormatLifetimeSinceDate(L"2024-02-29", text, _countof(text), L"en-US"));
+    assert(wcscmp(text, L"2/29/2024") == 0);
+    assert(FormatLifetimeSinceDate(L"2024-02-29", text, _countof(text), L"de-DE"));
+    assert(wcscmp(text, L"29.02.2024") == 0);
+    assert(FormatLifetimeSinceDate(L"2024-02-29", text, _countof(text)));   // user's locale
+    assert(text[0] != L'\0');
+    assert(!FormatLifetimeSinceDate(L"2023-02-29", text, _countof(text), L"en-US"));
+    assert(!FormatLifetimeSinceDate(L"2024-02-29", text, 3, L"en-US"));    // too small: fails cleanly
+    printf("PASS: TestLocalizedSinceDate\n");
 }
 
 static AdapterInfo MockAdapter(ULONGLONG luid, const wchar_t* name, IF_OPER_STATUS status, DWORD type) {
@@ -989,6 +1065,9 @@ int main() {
     TestAdapterRebindAndNoFallback();
     TestChooseAdapter();
     TestAdapterSettings();
+    TestBitRateFormatting();
+    TestSpeedUnitsSetting();
+    TestLocalizedSinceDate();
     TestDefaultRouteLookup();
     TestTaskbarPlacement();
     TestOverlayAlphaComposition();

@@ -201,6 +201,9 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
         s->decimalPlaces = ClampSpeedDecimalPlaces(static_cast<int>(decimalPlaces));
     }
 
+    GetPrivateProfileStringW(L"Overlay", L"SpeedUnits", L"bytes", num, _countof(num), filePath);
+    s->speedBits = _wcsicmp(num, L"bits") == 0 ? 1 : 0;
+
     s->down = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"DownloadColor", static_cast<DWORD>(s->down), filePath));
     s->up = static_cast<COLORREF>(GetPrivateProfileIntW(L"Overlay", L"UploadColor", static_cast<DWORD>(s->up), filePath));
 
@@ -268,6 +271,8 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     swprintf_s(num, L"%d", ClampSpeedDecimalPlaces(s->decimalPlaces));
     out += L"\r\nDecimalPlaces=";
     out += num;
+    out += L"\r\nSpeedUnits=";
+    out += s->speedBits ? L"bits" : L"bytes";
 
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->down));
     out += L"\r\nDownloadColor=";
@@ -476,8 +481,9 @@ void ResetLifetimeTotals(AppSettings* s) {
     SetToday(s->lifetimeSince, _countof(s->lifetimeSince));
 }
 
-bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen) {
+bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen, const wchar_t* locale) {
     SYSTEMTIME date = {};
-    if (!out || maxLen == 0 || !ParseIsoDate(isoDate, &date)) return false;
-    return swprintf_s(out, maxLen, L"%02u/%02u/%04u", date.wDay, date.wMonth, date.wYear) >= 0;
+    if (!out || maxLen == 0 || maxLen > INT_MAX || !ParseIsoDate(isoDate, &date)) return false;
+    return GetDateFormatEx(locale ? locale : LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &date, nullptr,
+                           out, static_cast<int>(maxLen), nullptr) > 0;
 }
