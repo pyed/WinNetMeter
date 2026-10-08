@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M12** (shell fullscreen signal).
+- Last completed milestone: **M12** (shell fullscreen signal); **M13** (release) in progress.
 
 ## 0.2.0 milestone plan
 
@@ -431,3 +431,18 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   shell state: fails 2/2 ("Overlay came back over a fullscreen app...").
 - Verified: build clean; 60 unit tests; 23/23 integration checks; `Fullscreen` 4/4 runs;
   isolation guard clean.
+
+### M13: README, 0.2.0, release, deploy (2026-10-09)
+- README rewritten for 0.2.0: features, settings (which check boxes need Apply), the known
+  limitation with the measured numbers and the embedded-mode trade-offs, multi-monitor
+  caveat, minimum Windows 10 1607, and what CI and the release workflow actually run (the
+  release job repeats unit and PE checks only; behavioral checks run in CI on `main`).
+- `version.h` -> 0.2.0. Full local verification of that build: 60 unit tests, 23/23
+  integration checks, isolation guard clean.
+- Upgrade rehearsal on a copy of the dev machine's live 0.1.x settings file
+  (`--integration-test --settings <copy>`, scratch `m13/rehearse.ps1`): the 0.2.0 meter sat at
+  exactly the running 0.1.6 meter's rectangle ([2,676,134,716] on the 1280x720 display);
+  Classic position, Automatic colours, Automatic (Ethernet) adapter, bytes, KB/s floor,
+  1 decimal, tray off, totals preserved (471.28 GB / 144.88 GB since 31/08/2026); the saved copy
+  gained `SettingsVersion=2`, `Anchor=legacy`, `Embed=0`, `AllTaskbars=0`, `SpeedUnits=bytes`,
+  colours `auto`, `[Network] Adapter=auto`; the live file was untouched.
