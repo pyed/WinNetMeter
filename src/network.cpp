@@ -117,6 +117,26 @@ void FormatPrefixedSpeed(const wchar_t* prefix, const wchar_t* speed, wchar_t* o
     }
 }
 
+void FormatStackedSpeed(const wchar_t* prefix, const wchar_t* speed, int decimalPlaces,
+                        std::wstring* head, std::wstring* unit, std::wstring* widestHead) {
+    const std::wstring text = speed ? speed : L"";
+    const size_t space = text.rfind(L' ');
+    std::wstring lead;
+    if (prefix && prefix[0]) {
+        lead = prefix;
+        lead += L' ';
+    }
+    *head = lead + (space == std::wstring::npos ? text : text.substr(0, space));
+    *unit = space == std::wstring::npos ? std::wstring() : text.substr(space + 1);
+    // Values stay below 10000 in their unit (the next unit takes over first), so
+    // four integer digits bound the width; 8 is as wide as any digit.
+    *widestHead = lead + L"8888";
+    if (decimalPlaces > 0) {
+        *widestHead += L'.';
+        widestHead->append(static_cast<size_t>(decimalPlaces), L'8');
+    }
+}
+
 // Retrieves live row by stable NET_LUID
 static bool FetchRowByLuid(NET_LUID luid, MIB_IF_ROW2* row) {
     if (luid.Value == 0) return false;

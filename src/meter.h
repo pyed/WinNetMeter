@@ -8,6 +8,10 @@ struct MeterState {
     bool show = false;
     std::wstring upText;          // prefixed and formatted, e.g. L"↑  1.50 MB/s"
     std::wstring downText;
+    // The stacked meter of narrow vertical taskbars (FormatStackedSpeed):
+    // L"↑ 1.50" over L"MB/s", and the widest first line, which sizes the font.
+    std::wstring upHead, upUnit, upHeadWidest;
+    std::wstring downHead, downUnit, downHeadWidest;
     COLORREF upColor = RGB(255, 255, 255);     // already resolved (no METER_COLOR_AUTO)
     COLORREF downColor = RGB(255, 255, 255);
     std::wstring fontFamily = L"Segoe UI";

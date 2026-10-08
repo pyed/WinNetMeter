@@ -4,7 +4,7 @@ param(
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
                  'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu',
-                 'AllTaskbars')]
+                 'AllTaskbars', 'VerticalTaskbar')]
     [string]$Check
 )
 
@@ -383,8 +383,9 @@ public static class WinNetMeterNative
                 lpszClassName = className
             };
             RegisterClassExW(ref windowClass);
-            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, WS_POPUP | WS_VISIBLE
-            Handle = CreateWindowExW(0x08000080, className, null, 0x90000000, x, y, width, height,
+            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST (as real taskbars are),
+            // WS_POPUP | WS_VISIBLE
+            Handle = CreateWindowExW(0x08000088, className, null, 0x90000000, x, y, width, height,
                                      IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
             ready.Set();
             MSG message;
@@ -882,6 +883,10 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`nEmbed=1`r`n"
 } elseif ($Check -eq 'AllTaskbars') {
     "[Overlay]`r`nShowWidget=1`r`nAllTaskbars=1`r`n"
+} elseif ($Check -eq 'VerticalTaskbar') {
+    # Magenta for pixel checks; 10 pt bold with "Up"/"Dn" prefixes is too wide for a
+    # two-line meter on a 48 px taskbar, so the stacked font has to be fitted down.
+    "[Overlay]`r`nShowWidget=1`r`nAllTaskbars=1`r`nFontSize=10.0`r`nUploadPrefix=x00550070`r`nDownloadPrefix=x0044006E`r`nDecimalPlaces=1`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`n"
 } elseif ($Check -eq 'StartMenu') {
     # Magenta "WWWW 0 GB/s" on both lines: a constant patch of unmistakable pixels.
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`nDownloadPrefix=x0057005700570057`r`nUploadPrefix=x0057005700570057`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
@@ -1676,6 +1681,73 @@ try {
                 Assert-True (Wait-Meters $session 0 @($primaryWindow)) 'The primary meter did not survive the secondary taskbar going away'
                 Assert-True (-not $session.Process.HasExited) 'WinNetMeter exited when the secondary taskbar went away'
                 'ALL_TASKBARS_OK'
+            } finally {
+                $fake.Dispose()
+            }
+        }
+        'VerticalTaskbar' {
+            # Taskbars on the left or right are narrower than the two-line meter, which
+            # used to be cut off there. The real taskbar's position is a user setting, so a
+            # stand-in secondary taskbar plays a vertical one, as thick as the real taskbar.
+            $main = Get-AppWindow $session $mainClass
+            Assert-True (Wait-Meters $session 1) 'Expected only the primary meter first'
+            $taskbar = [WinNetMeterNative]::GetTaskbar().rc
+            $primaryWindow = [WinNetMeterNative]::TaskbarWindow()
+            $monitor = [WinNetMeterNative]::GetMonitorRect($primaryWindow)
+            $horizontal = ($taskbar.Right - $taskbar.Left) -gt ($taskbar.Bottom - $taskbar.Top)
+            $thickness = [Math]::Min($taskbar.Right - $taskbar.Left, $taskbar.Bottom - $taskbar.Top)
+            $x = if (-not $horizontal -and $taskbar.Left -le $monitor.Left) { $monitor.Right - $thickness } else { $monitor.Left }
+            $y = if ($horizontal -and $taskbar.Top -le $monitor.Top) { $monitor.Top + $thickness } else { $monitor.Top }
+            $length = ($monitor.Bottom - $monitor.Top) - $(if ($horizontal) { $thickness } else { 0 })
+            $fake = New-Object WinNetMeterNative+FakeTaskbar('Shell_SecondaryTrayWnd', $x, $y, $thickness, $length)
+            try {
+                $fakeRect = New-Object WinNetMeterNative+RECT
+                [void][WinNetMeterNative]::GetWindowRect($fake.Handle, [ref]$fakeRect)
+                $dpi = [WinNetMeterNative]::GetDpiForWindow($primaryWindow)
+                $scale = { param([int]$value) [int][Math]::Floor(($value * $dpi + 48) / 96) }
+                $padding = [Math]::Max(1, (& $scale 2))
+                $magenta = { param($r) [WinNetMeterNative]::CountScreenPixels($r, 255, 0, 255, 40) }
+                $column = { param($r, [int]$at) $c = $r; $c.Left = $at; $c.Right = $at + 1; $c }
+                # A stacked meter: as wide as the taskbar inside the padding, taller than the
+                # two-line one, text in both halves and clear of both sides. (That the widest
+                # possible lines fit is TestFittingFont's job: clipped text stops inside the
+                # meter's padding, so pixels at the sides could not show it.)
+                $assertStacked = {
+                    param([string]$Mode, [scriptblock]$Find)
+                    $deadline = [Environment]::TickCount + 4000
+                    do {
+                        $meter = & $Find
+                        $ok = $false
+                        if ($meter) {
+                            $r = $meter.Rect
+                            $inside = & $magenta $r
+                            $edges = (& $magenta (& $column $r $r.Left)) + (& $magenta (& $column $r ($r.Right - 1)))
+                            $top = $r; $top.Bottom = $r.Top + [int](($r.Bottom - $r.Top) / 2)
+                            $bottom = $r; $bottom.Top = $top.Bottom
+                            $ok = ($r.Right - $r.Left) -eq ($thickness - 2 * $padding) -and ($r.Bottom - $r.Top) -gt (& $scale 40) -and
+                                  $inside -ge 40 -and $edges -eq 0 -and (& $magenta $top) -gt 0 -and (& $magenta $bottom) -gt 0
+                        }
+                        if (-not $ok) { Start-Sleep -Milliseconds 100 }
+                    } while (-not $ok -and [Environment]::TickCount -lt $deadline)
+                    $size = if ($meter) { '{0}x{1}' -f ($meter.Rect.Right - $meter.Rect.Left), ($meter.Rect.Bottom - $meter.Rect.Top) } else { 'none' }
+                    Assert-True $ok "$Mode meter on a vertical taskbar is not a complete stacked meter: $size, $inside text pixels, $edges at the sides (taskbar $thickness px)"
+                    "VERTICAL $Mode meter ${size}: $inside text pixels, none at the sides"
+                }
+
+                Assert-True (Wait-Meters $session 2) 'No meter appeared on the vertical taskbar'
+                & $assertStacked 'overlay' {
+                    @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id) | Where-Object {
+                        $_.ClassName -eq 'WinNetMeterOverlay' -and $_.Visible -and $_.Rect.Left -ge $fakeRect.Left -and $_.Rect.Right -le $fakeRect.Right
+                    }) | Select-Object -First 1
+                }
+
+                Set-MeterOption $main.Handle 2035 'Embed' $true
+                Assert-True (Wait-Meters $session 0 @($primaryWindow, $fake.Handle)) 'Embedded mode did not put a meter in each taskbar'
+                & $assertStacked 'embedded' {
+                    @([WinNetMeterNative]::GetChildWindows($fake.Handle, [uint32]$session.Process.Id) |
+                      Where-Object { $_.ClassName -eq 'WinNetMeterEmbedded' -and $_.Visible }) | Select-Object -First 1
+                }
+                'VERTICAL_TASKBAR_OK'
             } finally {
                 $fake.Dispose()
             }

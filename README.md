@@ -11,7 +11,7 @@ WinNetMeter is a lightweight Windows 10 and 11 x64 utility that shows real-time 
 - Live upload/download speed, session totals, and resettable persisted totals.
 - **Automatic** adapter selection that follows whichever interface carries the default route (switching between Wi-Fi, Ethernet and VPN as you do), or a fixed adapter that is remembered across restarts and reconnects.
 - Speeds in bytes (KB/s, MB/s, binary) or bits (Kbps, Mbps, decimal), with a minimum unit and 0 to 2 decimal places.
-- A transparent, non-activating taskbar meter placed **next to the tray**, **after the app buttons** or at the **left edge**, plus an offset from there.
+- A transparent, non-activating taskbar meter placed **next to the tray**, **after the app buttons** or at the **left edge**, plus an offset from there. On a taskbar at the left or right of the screen it stacks each speed's value over its unit to fit.
 - Optional **embedded** meter that stays visible while Start or Search is open (see [Known limitations](#known-limitations)).
 - Optional meters on **every taskbar** when the taskbar is shown on several monitors.
 - Colors that follow the light or dark taskbar automatically, or fixed colors of your choice; configurable prefixes and font, all updated live.

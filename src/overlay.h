@@ -21,24 +21,37 @@ inline bool IsWindowRectFullscreen(const RECT& wnd, const RECT& monitor, int tol
            wnd.bottom >= monitor.bottom - tolerance;
 }
 
-// The meter box: 132 x 40 logical px, shrunk to fit inside the taskbar.
-inline void CalculateMeterBox(const RECT& taskbar, UINT dpi, int* width, int* height, int* padding) {
+// The meter box: 132 x 40 logical px, shrunk to fit inside the taskbar. A
+// stacked meter (stackedHeight > 0, see IsStackedMeterTaskbar) is instead as
+// wide as the taskbar allows and stackedHeight physical px tall.
+inline void CalculateMeterBox(const RECT& taskbar, UINT dpi, int* width, int* height, int* padding,
+                              int stackedHeight = 0) {
     const int barWidth = taskbar.right - taskbar.left;
     const int barHeight = taskbar.bottom - taskbar.top;
     *padding = ScaleOverlay(2, dpi) > 0 ? ScaleOverlay(2, dpi) : 1;
-    *width = ScaleOverlay(132, dpi);
-    *height = ScaleOverlay(40, dpi);
+    *width = stackedHeight > 0 ? barWidth : ScaleOverlay(132, dpi);
+    *height = stackedHeight > 0 ? stackedHeight : ScaleOverlay(40, dpi);
     if (*width > barWidth - 2 * *padding) *width = barWidth - 2 * *padding;
     if (*height > barHeight - 2 * *padding) *height = barHeight - 2 * *padding;
     if (*width < 1) *width = 1;
     if (*height < 1) *height = 1;
 }
 
-inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi, int logicalOffset = 0) {
+// Vertical taskbars narrower than the 132 px meter get a stacked meter: as wide
+// as the taskbar, with each speed's value and unit on separate lines.
+inline bool IsStackedMeterTaskbar(const RECT& taskbar, UINT edge, UINT dpi) {
+    if (edge != ABE_LEFT && edge != ABE_RIGHT) return false;
+    int width = 0, height = 0, padding = 0;
+    CalculateMeterBox(taskbar, dpi, &width, &height, &padding);
+    return width < ScaleOverlay(132, dpi);
+}
+
+inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi, int logicalOffset = 0,
+                                        int stackedHeight = 0) {
     const int barWidth = taskbar.right - taskbar.left;
     const int barHeight = taskbar.bottom - taskbar.top;
     int width = 0, height = 0, padding = 0;
-    CalculateMeterBox(taskbar, dpi, &width, &height, &padding);
+    CalculateMeterBox(taskbar, dpi, &width, &height, &padding, stackedHeight);
 
     int x = taskbar.left + (barWidth - width) / 2;
     int y = taskbar.top + (barHeight - height) / 2;
@@ -76,13 +89,14 @@ inline bool IsUsableTaskbarPart(const RECT& part, const RECT& taskbar) {
 
 // Meter rectangle for an anchor. logicalOffset moves it along the taskbar
 // (right on horizontal taskbars, down on vertical ones), relative to the anchor.
-inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, MeterAnchor anchor, int logicalOffset) {
+inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, MeterAnchor anchor, int logicalOffset,
+                                       int stackedHeight = 0) {
     if (anchor == MeterAnchor::Legacy) {
-        return CalculateTaskbarOverlayRect(layout.taskbar, layout.edge, dpi, logicalOffset);
+        return CalculateTaskbarOverlayRect(layout.taskbar, layout.edge, dpi, logicalOffset, stackedHeight);
     }
     const RECT& taskbar = layout.taskbar;
     int width = 0, height = 0, padding = 0;
-    CalculateMeterBox(taskbar, dpi, &width, &height, &padding);
+    CalculateMeterBox(taskbar, dpi, &width, &height, &padding, stackedHeight);
     const int gap = ScaleOverlay(4, dpi);
     const int offset = ScaleOverlay(logicalOffset, dpi);
     const bool hasTray = IsUsableTaskbarPart(layout.tray, taskbar);

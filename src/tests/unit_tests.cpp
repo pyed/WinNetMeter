@@ -1047,6 +1047,100 @@ void TestSecondaryTaskbarGeometry() {
     printf("PASS: TestSecondaryTaskbarGeometry\n");
 }
 
+// Narrow vertical taskbars: value over unit, and a widest line that depends
+// only on the prefix and decimal places, never on the current speed.
+void TestStackedSpeedText() {
+    std::wstring head, unit, widest;
+    FormatStackedSpeed(L"↑", L"1.50 MB/s", 2, &head, &unit, &widest);
+    assert(head == L"↑ 1.50" && unit == L"MB/s" && widest == L"↑ 8888.88");
+    FormatStackedSpeed(L"↓", L"0 B/s", 2, &head, &unit, &widest);
+    assert(head == L"↓ 0" && unit == L"B/s" && widest == L"↓ 8888.88");
+    FormatStackedSpeed(L"", L"120.5 Mbps", 1, &head, &unit, &widest);
+    assert(head == L"120.5" && unit == L"Mbps" && widest == L"8888.8");
+    FormatStackedSpeed(L"Down:", L"12 KB/s", 0, &head, &unit, &widest);
+    assert(head == L"Down: 12" && unit == L"KB/s" && widest == L"Down: 8888");
+    FormatStackedSpeed(nullptr, L"odd", 2, &head, &unit, &widest);   // no unit to split off
+    assert(head == L"odd" && unit.empty() && widest == L"8888.88");
+    printf("PASS: TestStackedSpeedText\n");
+}
+
+void TestStackedMeterGeometry() {
+    // Only narrow vertical taskbars stack; a widened one (Windows 10 allows it)
+    // keeps the normal meter, and horizontal ones always do.
+    assert(IsStackedMeterTaskbar({ 0, 0, 48, 1040 }, ABE_LEFT, 96));
+    assert(IsStackedMeterTaskbar({ 3696, 0, 3840, 2016 }, ABE_RIGHT, 288));
+    assert(!IsStackedMeterTaskbar({ 0, 0, 200, 1040 }, ABE_LEFT, 96));
+    assert(!IsStackedMeterTaskbar({ 0, 1032, 1920, 1080 }, ABE_BOTTOM, 96));
+    assert(!IsStackedMeterTaskbar({ 0, 0, 1920, 48 }, ABE_TOP, 96));
+
+    // A stacked box spans the taskbar's width inside the padding and is as tall
+    // as asked; the anchors work along the length as before.
+    TaskbarLayout layout = {};
+    layout.taskbar = { 0, 0, 48, 1040 };
+    layout.edge = ABE_LEFT;
+    layout.tray = { 0, 900, 48, 1040 };
+    RECT r = CalculateAnchoredMeterRect(layout, 96, MeterAnchor::BesideTray, 0, 64);
+    assert(r.left == 2 && r.right == 46 && r.bottom - r.top == 64);
+    assert(r.bottom == 900 - 4);
+    r = CalculateAnchoredMeterRect(layout, 96, MeterAnchor::LeftEdge, 0, 64);
+    assert(r.top == 4 && r.left == 2 && r.right == 46);
+    r = CalculateAnchoredMeterRect(layout, 96, MeterAnchor::Legacy, 0, 64);
+    assert(r.left == 2 && r.right == 46 && r.bottom - r.top == 64);
+    // Without a stacked height nothing changes (the two-line box, clipped to the width).
+    r = CalculateAnchoredMeterRect(layout, 96, MeterAnchor::BesideTray, 0);
+    assert(r.right - r.left == 44 && r.bottom - r.top == 40);
+    printf("PASS: TestStackedMeterGeometry\n");
+}
+
+void TestFittingFont() {
+    LOGFONTW base = {};
+    base.lfHeight = -40;
+    base.lfWeight = FW_BOLD;
+    base.lfQuality = ANTIALIASED_QUALITY;
+    wcscpy_s(base.lfFaceName, L"Segoe UI");
+    const std::wstring lines[] = { L"↑ 8888.88", L"Gbps" };
+    HDC dc = CreateCompatibleDC(nullptr);
+    assert(dc);
+    auto widest = [&](HFONT font) {
+        HGDIOBJ previous = SelectObject(dc, font);
+        int result = 0;
+        for (const std::wstring& line : lines) {
+            SIZE extent = {};
+            GetTextExtentPoint32W(dc, line.c_str(), static_cast<int>(line.size()), &extent);
+            if (extent.cx > result) result = extent.cx;
+        }
+        SelectObject(dc, previous);
+        return result;
+    };
+
+    // Plenty of room: the requested size, unchanged.
+    int row = 0;
+    HFONT font = CreateFittingFont(base, 8, lines, 2, 2000, &row);
+    assert(font && row > 0);
+    LOGFONTW chosen = {};
+    GetObjectW(font, sizeof(chosen), &chosen);
+    assert(chosen.lfHeight == -40);
+    const int full = widest(font);
+    DeleteObject(font);
+
+    // Half the room: shrinks until every line fits, and not much further.
+    font = CreateFittingFont(base, 8, lines, 2, full / 2, &row);
+    assert(font);
+    assert(widest(font) <= full / 2);
+    GetObjectW(font, sizeof(chosen), &chosen);
+    assert(chosen.lfHeight <= -16 && chosen.lfHeight > -40);
+    DeleteObject(font);
+
+    // No room at all: the minimum size rather than nothing.
+    font = CreateFittingFont(base, 8, lines, 2, 5, &row);
+    assert(font);
+    GetObjectW(font, sizeof(chosen), &chosen);
+    assert(chosen.lfHeight == -8);
+    DeleteObject(font);
+    DeleteDC(dc);
+    printf("PASS: TestFittingFont\n");
+}
+
 // Test 7: Taskbar-relative placement across edges, negative coordinates, and DPI
 void TestTaskbarPlacement() {
     const RECT bottomSecondary = { -1920, 1032, 0, 1080 };
@@ -1410,6 +1504,9 @@ int main() {
     TestEmbedSetting();
     TestAllTaskbarsSetting();
     TestSecondaryTaskbarGeometry();
+    TestStackedSpeedText();
+    TestStackedMeterGeometry();
+    TestFittingFont();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();
     printf("ALL TESTS PASSED\n");

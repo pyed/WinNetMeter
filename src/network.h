@@ -4,6 +4,7 @@
 #include <ws2ipdef.h>
 #include <windows.h>
 #include <iphlpapi.h>
+#include <string>
 #include "settings.h"
 
 // Interface types
@@ -34,6 +35,11 @@ void FormatSpeed(ULONGLONG bytesPerSecond, MinimumSpeedUnit minimumUnit,
 void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen);
 void FormatCompact(ULONGLONG bytesPerSecond, wchar_t* out, size_t maxLen, bool bits = false);
 void FormatPrefixedSpeed(const wchar_t* prefix, const wchar_t* speed, wchar_t* out, size_t maxLen);
+// One direction of the stacked meter (narrow vertical taskbars): prefix and
+// value over the unit ("↑ 1.50" over "MB/s"), plus the widest the first line can
+// get with this prefix and these decimal places ("↑ 8888.88"), to size the font.
+void FormatStackedSpeed(const wchar_t* prefix, const wchar_t* speed, int decimalPlaces,
+                        std::wstring* head, std::wstring* unit, std::wstring* widestHead);
 
 // Live counter sampler keyed by stable NET_LUID.
 struct NetSampler {

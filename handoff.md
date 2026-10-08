@@ -6,10 +6,13 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.2.0** (tag `v0.2.0`, 2026-10-09), the plan below, driven by the second audit
   (2026-10-08). Deployed on the dev machine.
-- Last completed milestone: **M13**. No work in progress; see "Open items" for what next.
+- Last completed milestone: **M14** (vertical taskbars, upload-first order; on `main`, not released).
+  See "Open items" for what next.
 
 ## Open items
 
+- Vertical taskbars (M14) are verified against a stand-in only; check on a real taskbar moved
+  to the left or right (a user setting, not changed from tests).
 - Real multi-monitor hardware: meters on secondary taskbars are only tested against a
   stand-in window (M11), including the Windows 10 class names and the per-monitor DPI path.
 - Windows 10: nothing in 0.2.0 was run on Windows 10 (embedded mode, the secondary-taskbar
@@ -473,3 +476,34 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   replaced the exe and started it through `explorer.exe` (parent: explorer, as at logon). The
   0.2.0 meter came up at the same rectangle [2,676,134,716]; the Run value is unchanged; the
   live settings file migrated on 0.2.0's first save exactly as rehearsed.
+
+### M14: vertical taskbars, upload-first order (2026-10-09)
+- Reported after 0.2.0: on a taskbar at the left or right the meter was cut off (the 132 px
+  two-line box was only shrunk to the taskbar's width); the status panel listed download
+  above upload, unlike the meter and the settings.
+- Order: status rows, the tray icon's lines and its tooltip are upload-first now.
+  `CustomizationTotals` asserts the status order (fails on the 0.2.0 build).
+- Vertical: `IsStackedMeterTaskbar` (vertical and narrower than the 132 px box) switches to
+  a stacked meter: as wide as the taskbar, four centred lines, value over unit
+  ("↑ 1.50" / "MB/s" / "↓ 230" / "KB/s"). The font is the user's, shrunk by
+  `CreateFittingFont` (render.cpp, also usable elsewhere) until the widest possible lines fit:
+  `FormatStackedSpeed` builds "prefix 8888.88" for the configured decimals, plus every unit.
+  Sizing for the widest possible text, not the current one, keeps the font from changing as
+  the speed changes. Floor about 6 pt (8 px at 96 DPI). The box height is 4 rows plus padding;
+  anchors and offsets work along the length as before. Horizontal taskbars are unchanged.
+- Tests: unit `TestStackedSpeedText`, `TestStackedMeterGeometry`, `TestFittingFont`;
+  integration `VerticalTaskbar` (stand-in `Shell_SecondaryTrayWnd` along the left edge, as
+  thick as the real taskbar; overlay and embedded): stacked size, text in both halves, none
+  at the sides. Negative control without stacking: fails (132x120, not stacked). Note: pixels
+  at the sides cannot prove text is not clipped, because DrawText clips inside the meter's
+  padding; the fitting itself is what `TestFittingFont` asserts.
+- The harness stand-in taskbar is now `WS_EX_TOPMOST`, like real taskbars, so an embedded
+  meter in it is not hidden by other windows during pixel checks.
+- Looked at (scratch `m14/look.ps1` + `grab.exe`): 48 and 40 logical px wide at 300%, 8 and
+  10 pt, 1 and 2 decimals: centred and legible.
+- Measured on the deployed 0.2.0 for planning: idle CPU 31 ms per 30 s (~0.1% of one core),
+  private memory 3.5 MB, working set 21 MB (mostly shared system DLLs: shell32,
+  windows.storage, combase), 2 threads, 39 modules.
+- Gotcha: in `New-Object Type(a, b - c)` PowerShell binds the comma before the minus; compute
+  arguments into variables first.
+- Verified: build clean; 63 unit tests; 24/24 integration checks; isolation guard clean.

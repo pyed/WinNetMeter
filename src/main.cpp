@@ -260,6 +260,10 @@ static void UpdateMeter() {
     state.upText = text;
     FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, text, _countof(text));
     state.downText = text;
+    FormatStackedSpeed(g_settings.upPrefix, g_szUpSpeed, g_settings.decimalPlaces,
+                       &state.upHead, &state.upUnit, &state.upHeadWidest);
+    FormatStackedSpeed(g_settings.downPrefix, g_szDownSpeed, g_settings.decimalPlaces,
+                       &state.downHead, &state.downUnit, &state.downHeadWidest);
     state.upColor = ResolveMeterColor(g_settings.up, g_taskbarLight);
     state.downColor = ResolveMeterColor(g_settings.down, g_taskbarLight);
     state.fontFamily = g_settings.fontFamily;

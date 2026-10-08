@@ -94,3 +94,40 @@ HICON CreateMeterIcon(int size, const wchar_t* topText, const wchar_t* bottomTex
     DeleteDC(memory);
     return icon;
 }
+
+HFONT CreateFittingFont(const LOGFONTW& base, int minHeight, const std::wstring* lines, std::size_t count,
+                        int width, int* rowHeight) {
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) return nullptr;
+    LOGFONTW font = base;
+    int height = base.lfHeight < 0 ? -base.lfHeight : base.lfHeight;
+    if (minHeight > height) minHeight = height;
+    HFONT fitted = nullptr;
+    while (height > 0) {
+        font.lfHeight = -height;
+        HFONT candidate = CreateFontIndirectW(&font);
+        if (!candidate) break;
+        HGDIOBJ previous = SelectObject(dc, candidate);
+        int widest = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const int lineWidth = TextWidth(dc, lines[i].c_str());
+            if (lineWidth > widest) widest = lineWidth;
+        }
+        TEXTMETRICW metrics = {};
+        GetTextMetricsW(dc, &metrics);
+        SelectObject(dc, previous);
+        if (widest <= width || height <= minHeight) {
+            fitted = candidate;
+            *rowHeight = metrics.tmHeight;
+            break;
+        }
+        DeleteObject(candidate);
+        // Text width is close to proportional to height: jump near the answer,
+        // then step down a pixel at a time (hinting makes it not quite linear).
+        const int estimate = MulDiv(height, width, widest);
+        height = estimate < height ? estimate : height - 1;
+        if (height < minHeight) height = minHeight;
+    }
+    DeleteDC(dc);
+    return fitted;
+}

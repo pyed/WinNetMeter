@@ -1,5 +1,6 @@
 #include "meter.h"
 #include "overlay.h"
+#include "render.h"
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -53,6 +54,16 @@ struct CachedFont {
     HFONT font;
 };
 
+// The stacked meter's font, fitted to a box width. One entry: it is rebuilt
+// when the width, DPI, font or widest lines change, which settings changes do.
+struct StackedFont {
+    UINT dpi = 0;
+    int width = 0;
+    std::wstring key;
+    HFONT font = nullptr;
+    int rowHeight = 0;
+};
+
 // Set during start-up and shutdown by the UI thread; everything else here is
 // touched only by the meter thread.
 HANDLE g_thread = nullptr;
@@ -75,6 +86,7 @@ std::vector<CachedFont> g_fonts;   // one per DPI in use, for the font below
 std::wstring g_fontFamily;
 double g_fontSize = 0.0;
 int g_fontStyle = -1;
+StackedFont g_stackedFont;
 
 bool IsMeterWindow(HWND hwnd) {
     if (!hwnd) return false;
@@ -372,10 +384,75 @@ HFONT GetMeterFont(UINT dpi) {
     return font;
 }
 
-// Draws the two meter lines into a layered window of width x height at
-// destination (screen coordinates for a top-level window, parent client
-// coordinates for a child). Returns whether the window was updated.
-bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi) {
+void ClearStackedFont() {
+    if (g_stackedFont.font) DeleteObject(g_stackedFont.font);
+    g_stackedFont = StackedFont();
+}
+
+// The user's font, shrunk if needed so that the widest value line and every
+// unit fit across the box. Sized for the widest possible lines rather than the
+// current ones, so it does not change size as the speed changes.
+bool GetStackedFont(UINT dpi, int boxWidth, HFONT* font, int* rowHeight) {
+    const std::wstring key = g_state.fontFamily + L'|' + std::to_wstring(g_state.fontSize) + L'|' +
+                             std::to_wstring(g_state.fontStyle) + L'|' + g_state.upHeadWidest + L'|' +
+                             g_state.downHeadWidest;
+    if (!g_stackedFont.font || g_stackedFont.dpi != dpi || g_stackedFont.width != boxWidth ||
+        g_stackedFont.key != key) {
+        ClearStackedFont();
+        const int style = g_state.fontStyle;
+        LOGFONTW base = {};
+        base.lfHeight = -MulDiv(static_cast<int>(g_state.fontSize * 96.0 / 72.0 + 0.5), static_cast<int>(dpi), 96);
+        base.lfWeight = (style & 1) ? FW_BOLD : FW_REGULAR;
+        base.lfItalic = (style & 2) ? TRUE : FALSE;
+        base.lfUnderline = (style & 4) ? TRUE : FALSE;
+        base.lfStrikeOut = (style & 8) ? TRUE : FALSE;
+        base.lfCharSet = DEFAULT_CHARSET;
+        base.lfQuality = ANTIALIASED_QUALITY;
+        wcsncpy_s(base.lfFaceName, g_state.fontFamily.c_str(), _TRUNCATE);
+        const std::wstring lines[] = { g_state.upHeadWidest, g_state.downHeadWidest,
+                                       L"B/s", L"KB/s", L"MB/s", L"GB/s", L"bps", L"Kbps", L"Mbps", L"Gbps" };
+        // Not below about 6 pt: smaller is unreadable, so clip instead.
+        g_stackedFont.font = CreateFittingFont(base, MulDiv(8, static_cast<int>(dpi), 96), lines, _countof(lines),
+                                               boxWidth - 2 * ScaleOverlay(2, dpi), &g_stackedFont.rowHeight);
+        g_stackedFont.dpi = dpi;
+        g_stackedFont.width = boxWidth;
+        g_stackedFont.key = key;
+    }
+    *font = g_stackedFont.font;
+    *rowHeight = g_stackedFont.rowHeight;
+    return g_stackedFont.font != nullptr;
+}
+
+// Where a slot's meter goes on its taskbar, and how its text is laid out:
+// two lines, or (stackedFont set) four stacked lines on a narrow vertical taskbar.
+struct MeterPlacement {
+    RECT target;
+    HFONT stackedFont;
+    int rowHeight;
+};
+
+MeterPlacement PlaceMeter(const MeterSlot& slot, const RECT& taskbar, UINT edge, UINT dpi) {
+    MeterPlacement placement = {};
+    int stackedHeight = 0;
+    if (IsStackedMeterTaskbar(taskbar, edge, dpi)) {
+        int width = 0, height = 0, padding = 0;
+        CalculateMeterBox(taskbar, dpi, &width, &height, &padding, 1);   // the stacked box's width
+        if (GetStackedFont(dpi, width, &placement.stackedFont, &placement.rowHeight)) {
+            stackedHeight = 4 * placement.rowHeight + 2 * ScaleOverlay(2, dpi);
+        }
+    }
+    placement.target = CalculateAnchoredMeterRect(GetSlotLayout(slot, taskbar, edge), dpi,
+                                                  static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset,
+                                                  stackedHeight);
+    return placement;
+}
+
+// Draws the meter into a layered window of width x height at destination
+// (screen coordinates for a top-level window, parent client coordinates for a
+// child): upload over download, as two lines or, with stackedFont, four.
+// Returns whether the window was updated.
+bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi,
+                HFONT stackedFont = nullptr, int rowHeight = 0) {
     const int stride = width * 4;
     // No GetDC(NULL): a screen-compatible memory DC and a null destination DC
     // are equivalent for UpdateLayeredWindow and avoid the shared DC cache.
@@ -400,21 +477,32 @@ bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi)
 
     HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
     memset(bits, 0, static_cast<size_t>(stride) * static_cast<size_t>(height));
-    HFONT font = GetMeterFont(dpi);
+    HFONT font = stackedFont ? stackedFont : GetMeterFont(dpi);
     HGDIOBJ oldFont = font ? SelectObject(memory, font) : nullptr;
     SetBkMode(memory, TRANSPARENT);
     SetTextColor(memory, RGB(255, 255, 255));
 
-    const int middle = height / 2;
-    int padding = ScaleOverlay(4, dpi);
-    if (padding * 2 >= width) padding = 0;
-    RECT upRect = { padding, 0, width - padding, middle };
-    RECT downRect = { padding, middle, width - padding, height };
-    const UINT textFlags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
-    DrawTextW(memory, g_state.upText.c_str(), -1, &upRect, textFlags);
-    DrawTextW(memory, g_state.downText.c_str(), -1, &downRect, textFlags);
+    int split = height / 2;   // upload colour above, download colour below
+    if (stackedFont) {
+        // Value over unit for each speed, centred; the font was fitted to the width.
+        const int top = (height - 4 * rowHeight) / 2;
+        const std::wstring* lines[] = { &g_state.upHead, &g_state.upUnit, &g_state.downHead, &g_state.downUnit };
+        for (int i = 0; i < 4; ++i) {
+            RECT row = { 0, top + i * rowHeight, width, top + (i + 1) * rowHeight };
+            DrawTextW(memory, lines[i]->c_str(), -1, &row, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        split = top + 2 * rowHeight;
+    } else {
+        int padding = ScaleOverlay(4, dpi);
+        if (padding * 2 >= width) padding = 0;
+        RECT upRect = { padding, 0, width - padding, split };
+        RECT downRect = { padding, split, width - padding, height };
+        const UINT textFlags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+        DrawTextW(memory, g_state.upText.c_str(), -1, &upRect, textFlags);
+        DrawTextW(memory, g_state.downText.c_str(), -1, &downRect, textFlags);
+    }
     GdiFlush();
-    ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, middle,
+    ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, split,
                       g_state.upColor, g_state.downColor);
 
     POINT source = { 0, 0 };
@@ -440,10 +528,11 @@ void RenderOverlay(const MeterSlot& slot) {
 
     UINT dpi = GetDpiForWindow(slot.window);
     if (dpi == 0) dpi = GetDpiForSystem();
-    RECT target = CalculateAnchoredMeterRect(GetSlotLayout(slot, taskbar, edge), dpi,
-                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
+    const MeterPlacement placement = PlaceMeter(slot, taskbar, edge, dpi);
+    const RECT& target = placement.target;
     POINT destination = { target.left, target.top };
-    if (PaintMeter(slot.window, destination, target.right - target.left, target.bottom - target.top, dpi)) {
+    if (PaintMeter(slot.window, destination, target.right - target.left, target.bottom - target.top, dpi,
+                   placement.stackedFont, placement.rowHeight)) {
         const UINT show = IsWindowVisible(slot.window) ? 0 : SWP_SHOWWINDOW;
         SetWindowPos(slot.window, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
@@ -479,15 +568,15 @@ void RenderEmbedded(const MeterSlot& slot) {
     }
     UINT dpi = GetDpiForWindow(slot.taskbar);
     if (dpi == 0) dpi = GetDpiForSystem();
-    RECT target = CalculateAnchoredMeterRect(GetSlotLayout(slot, taskbar, edge), dpi,
-                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
+    const MeterPlacement placement = PlaceMeter(slot, taskbar, edge, dpi);
+    RECT target = placement.target;
     const int width = target.right - target.left;
     const int height = target.bottom - target.top;
     // Two points are mapped as a rectangle, which keeps left < right if the
     // taskbar is mirrored (right-to-left layouts).
     MapWindowPoints(nullptr, slot.taskbar, reinterpret_cast<POINT*>(&target), 2);
     POINT destination = { target.left, target.top };
-    if (PaintMeter(slot.window, destination, width, height, dpi)) {
+    if (PaintMeter(slot.window, destination, width, height, dpi, placement.stackedFont, placement.rowHeight)) {
         // Above the taskbar's own child windows (its XAML host covers the whole bar).
         const UINT show = IsWindowVisible(slot.window) ? 0 : SWP_SHOWWINDOW;
         SetWindowPos(slot.window, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
@@ -718,6 +807,7 @@ void Shutdown() {
     for (MeterSlot& slot : g_slots) DestroySlotWindow(slot);
     g_slots.clear();
     ClearFonts();
+    ClearStackedFont();
     // Free snapshots that were still queued.
     MSG pending;
     while (PeekMessageW(&pending, g_host, WM_METER_STATE, WM_METER_STATE, PM_REMOVE)) {
