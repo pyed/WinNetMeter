@@ -1242,6 +1242,11 @@ try {
             [void][WinNetMeterNative]::GetWindowRect([WinNetMeterNative]::GetDlgItem($main.Handle, 2010), [ref]$upColorRect)
             [void][WinNetMeterNative]::GetWindowRect([WinNetMeterNative]::GetDlgItem($main.Handle, 2009), [ref]$downColorRect)
             Assert-True ($upPrefixRect.Top -lt $downPrefixRect.Top -and $upColorRect.Top -lt $downColorRect.Top) 'Settings are not ordered upload before download'
+            # The status panel lists upload above download too, like the meter.
+            $top = { param([int]$id) $r = New-Object WinNetMeterNative+RECT; [void][WinNetMeterNative]::GetWindowRect([WinNetMeterNative]::GetDlgItem($main.Handle, $id), [ref]$r); $r.Top }
+            foreach ($pair in @(@(203, 202, 'speeds'), @(205, 204, 'session totals'), @(112, 110, 'saved totals'))) {
+                Assert-True ((& $top $pair[0]) -lt (& $top $pair[1])) "Status $($pair[2]) do not list upload above download"
+            }
             # A 0.1.x-style file (TaskbarOffset, no Anchor) keeps the classic fixed point.
             $anchorCombo = [WinNetMeterNative]::GetDlgItem($main.Handle, 2034)
             Assert-True ([int][WinNetMeterNative]::SendMessageW($anchorCombo, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero) -eq 3) 'Legacy file did not keep the classic position'

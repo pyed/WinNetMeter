@@ -280,19 +280,20 @@ static void RelayoutMainControls(int dpi) {
         { g_hwndStatusGroup,               12,  12, 325, 480 },
         { g_hwndIfaceLbl,                   28,  42, 110,  20 },
         { g_combo,                         140,  39, 180, 250 },
-        { g_hwndDownTitle,                  28,  90, 140,  25 },
-        { g_hwndSpeedDown,                 175,  90, 145,  25 },
-        { g_hwndUpTitle,                    28, 125, 140,  25 },
-        { g_hwndSpeedUp,                   175, 125, 145,  25 },
-        { g_hwndTotdTitle,                  28, 175, 145,  25 },
-        { g_hwndTotalDown,                 180, 175, 140,  25 },
-        { g_hwndTotuTitle,                  28, 205, 145,  25 },
-        { g_hwndTotalUp,                   180, 205, 140,  25 },
+        // Upload above download everywhere, as on the meter and in the settings.
+        { g_hwndUpTitle,                    28,  90, 140,  25 },
+        { g_hwndSpeedUp,                   175,  90, 145,  25 },
+        { g_hwndDownTitle,                  28, 125, 140,  25 },
+        { g_hwndSpeedDown,                 175, 125, 145,  25 },
+        { g_hwndTotuTitle,                  28, 175, 145,  25 },
+        { g_hwndTotalUp,                   180, 175, 140,  25 },
+        { g_hwndTotdTitle,                  28, 205, 145,  25 },
+        { g_hwndTotalDown,                 180, 205, 140,  25 },
         { g_hwndLifetimeTitle,              28, 250, 292,  25 },
-        { g_hwndLifetimeDown,               28, 280, 145,  25 },
-        { g_hwndLifetimeDownValue,         180, 280, 140,  25 },
-        { g_hwndLifetimeUp,                 28, 310, 145,  25 },
-        { g_hwndLifetimeUpValue,           180, 310, 140,  25 },
+        { g_hwndLifetimeUp,                 28, 280, 145,  25 },
+        { g_hwndLifetimeUpValue,           180, 280, 140,  25 },
+        { g_hwndLifetimeDown,               28, 310, 145,  25 },
+        { g_hwndLifetimeDownValue,         180, 310, 140,  25 },
         { g_hwndLifetimeReset,             235, 342,  85,  26 },
         { g_hwndAuthor,                     28, 505, 300,  38 },
         { g_settingsUi.hwndGroup,          350,  12, 365, 480 },
@@ -416,13 +417,13 @@ static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
 // ---- Tray Icon Generation ----------------------------------------------------
 // Drawn at the size the shell uses for the taskbar's DPI, so it is not rescaled
 // (a fixed 16 px icon was tripled into a blur at 300%).
-static HICON CreateSpeedTrayIcon(const wchar_t* downSpeed, const wchar_t* upSpeed) {
+static HICON CreateSpeedTrayIcon(const wchar_t* upSpeed, const wchar_t* downSpeed) {
     HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
     UINT dpi = taskbar ? GetDpiForWindow(taskbar) : 0;
     if (dpi == 0) dpi = static_cast<UINT>(g_currentDpi);
-    return CreateMeterIcon(GetTrayIconSizeForDpi(dpi), downSpeed, upSpeed,
-                           ResolveMeterColor(g_settings.down, g_taskbarLight),
-                           ResolveMeterColor(g_settings.up, g_taskbarLight));
+    return CreateMeterIcon(GetTrayIconSizeForDpi(dpi), upSpeed, downSpeed,
+                           ResolveMeterColor(g_settings.up, g_taskbarLight),
+                           ResolveMeterColor(g_settings.down, g_taskbarLight));
 }
 
 static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {
@@ -430,13 +431,13 @@ static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {
     wchar_t up[96] = {};
     FormatPrefixedSpeed(g_settings.downPrefix, g_szDownSpeed, down, _countof(down));
     FormatPrefixedSpeed(g_settings.upPrefix, g_szUpSpeed, up, _countof(up));
-    _snwprintf_s(out, maxLen, _TRUNCATE, L"WinNetMeter\n%s\n%s", down, up);
+    _snwprintf_s(out, maxLen, _TRUNCATE, L"WinNetMeter\n%s\n%s", up, down);
 }
 
 static void UpdateTrayIcon() {
     if (!g_settings.showTrayIcon) return;
 
-    HICON hNewIcon = CreateSpeedTrayIcon(g_szDownCompact, g_szUpCompact);
+    HICON hNewIcon = CreateSpeedTrayIcon(g_szUpCompact, g_szDownCompact);
 
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
@@ -472,7 +473,7 @@ static void SetupTrayIcon() {
         g_hCurrentTrayIcon = nullptr;
     }
 
-    g_hCurrentTrayIcon = CreateSpeedTrayIcon(g_szDownCompact, g_szUpCompact);
+    g_hCurrentTrayIcon = CreateSpeedTrayIcon(g_szUpCompact, g_szDownCompact);
 
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
