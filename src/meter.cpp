@@ -17,6 +17,7 @@ enum : UINT {
     WM_METER_CHECK = WM_APP + 3,     // the foreground window or its geometry changed
     WM_METER_TOPMOST = WM_APP + 4,   // re-assert z-order after a foreground change
     WM_METER_QUIT = WM_APP + 5,
+    WM_METER_APPBAR = WM_APP + 6,    // appbar notifications from the shell (ABN_*)
 };
 
 // Bursts of state updates (typing in a settings field, a flood of timer ticks)
@@ -62,6 +63,9 @@ UINT g_openMessage = 0;
 
 std::vector<MeterSlot> g_slots;
 int g_raisesLeft = 0;
+HWND g_appbarShell = nullptr;          // the Shell_TrayWnd our appbar is registered with
+HWND g_shellFullscreen = nullptr;      // the app the shell last reported as fullscreen
+HMONITOR g_shellFullscreenMonitor = nullptr;
 HWINEVENTHOOK g_foregroundHook = nullptr;
 HWINEVENTHOOK g_locationHook = nullptr;
 MeterState g_state;
@@ -212,10 +216,7 @@ bool GetVisibleWindowBounds(HWND hwnd, RECT* out) {
     return GetWindowRect(hwnd, out) != FALSE;
 }
 
-bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
-    if (!targetMonitor) return false;
-
-    HWND fg = GetForegroundWindow();
+bool IsWindowFullscreenOnMonitor(HWND fg, HMONITOR targetMonitor) {
     if (!fg) return false;
 
     // A hidden or minimized window is never fullscreen application content
@@ -247,6 +248,75 @@ bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
         return false;
     }
     return true;
+}
+
+// ---- Shell fullscreen signal --------------------------------------------------
+// The shell tells appbars when a fullscreen app opens or closes
+// (ABN_FULLSCREENAPP); that is how the taskbar knows to step behind it. The host
+// window registers as an appbar that reserves no space (no ABM_SETPOS) only to
+// hear that. Measured on Windows 11: OPEN/CLOSE arrive within ~20 ms of every
+// transition, for a message-only window too, and the work area is unchanged.
+// Registrations die with Explorer, so a new taskbar window re-registers.
+void UpdateAppBarRegistration() {
+    HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (!taskbar || taskbar == g_appbarShell) return;
+    APPBARDATA data = {};
+    data.cbSize = sizeof(data);
+    data.hWnd = g_host;
+    data.uCallbackMessage = WM_METER_APPBAR;
+    if (g_appbarShell) SHAppBarMessage(ABM_REMOVE, &data);
+    g_appbarShell = SHAppBarMessage(ABM_NEW, &data) ? taskbar : nullptr;
+    g_shellFullscreen = nullptr;
+}
+
+void RemoveAppBarRegistration() {
+    if (!g_appbarShell) return;
+    APPBARDATA data = {};
+    data.cbSize = sizeof(data);
+    data.hWnd = g_host;
+    SHAppBarMessage(ABM_REMOVE, &data);
+    g_appbarShell = nullptr;
+}
+
+// OPEN names no window: it is the foreground one, which the shell has just
+// found to be fullscreen.
+void OnShellFullscreen(bool open) {
+    g_shellFullscreen = nullptr;
+    g_shellFullscreenMonitor = nullptr;
+    HWND app = open ? GetForegroundWindow() : nullptr;
+    HWND root = app ? GetAncestor(app, GA_ROOT) : nullptr;
+    if (root) app = root;
+    if (app && !IsMeterWindow(app) && app != g_notify && !IsShellOrDesktopWindow(app)) {
+        g_shellFullscreen = app;
+        g_shellFullscreenMonitor = MonitorFromWindow(app, MONITOR_DEFAULTTONULL);
+    }
+}
+
+// The app the shell reported, while it still looks like one: visible, not
+// minimized, on the same monitor. Anything else means a missed CLOSE; forget it.
+bool IsShellFullscreenOnMonitor(HMONITOR targetMonitor) {
+    HWND app = g_shellFullscreen;
+    if (!app) return false;
+    if (!IsWindow(app) || !IsWindowVisible(app) || IsIconic(app) ||
+        (GetWindowLongPtrW(app, GWL_STYLE) & WS_MINIMIZE) != 0 ||
+        MonitorFromWindow(app, MONITOR_DEFAULTTONULL) != g_shellFullscreenMonitor) {
+        g_shellFullscreen = nullptr;
+        return false;
+    }
+    return g_shellFullscreenMonitor == targetMonitor;
+}
+
+bool IsForegroundFullscreenOnMonitor(HMONITOR targetMonitor) {
+    if (!targetMonitor) return false;
+    HWND fg = GetForegroundWindow();
+    if (IsWindowFullscreenOnMonitor(fg, targetMonitor)) return true;
+    // A smaller window in front of a fullscreen app leaves the shell in
+    // fullscreen mode and the taskbar behind the app (measured), so keep the
+    // meter hidden too; unless the shell's own UI (taskbar, desktop) is in front.
+    HWND root = fg ? GetAncestor(fg, GA_ROOT) : nullptr;
+    if (root) fg = root;
+    if (fg && IsShellOrDesktopWindow(fg)) return false;
+    return IsShellFullscreenOnMonitor(targetMonitor);
 }
 
 bool ShouldShowMeter(RECT* outTaskbar, UINT* outEdge) {
@@ -554,6 +624,7 @@ void SyncMeters() {
         g_slots.clear();
         return;
     }
+    UpdateAppBarRegistration();
 
     std::vector<HWND> secondaries;
     if (g_state.allTaskbars) {
@@ -643,6 +714,7 @@ void Shutdown() {
     g_foregroundHook = g_locationHook = nullptr;
     KillTimer(g_host, RENDER_TIMER);
     KillTimer(g_host, RAISE_TIMER);
+    RemoveAppBarRegistration();
     for (MeterSlot& slot : g_slots) DestroySlotWindow(slot);
     g_slots.clear();
     ClearFonts();
@@ -682,6 +754,12 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_METER_CHECK:
         RenderOverlays();
+        return 0;
+    case WM_METER_APPBAR:
+        if (wp == ABN_FULLSCREENAPP) {
+            OnShellFullscreen(lp != 0);
+            RenderOverlays();
+        }
         return 0;
     case WM_METER_TOPMOST:
         if (HasOverlay()) {

@@ -270,6 +270,11 @@ public static class WinNetMeterNative
         return name.ToString();
     }
 
+    public static ulong ExStyleOf(IntPtr hwnd)
+    {
+        return unchecked((ulong)GetWindowLongPtrW(hwnd, -20).ToInt64());
+    }
+
     public static uint ProcessOf(IntPtr hwnd)
     {
         uint processId;
@@ -1050,6 +1055,34 @@ try {
                     Start-Sleep -Milliseconds 50
                 }
                 Assert-True $hidden 'Overlay did not hide for fullscreen window'
+
+                # 6b. A smaller window takes the foreground while the fullscreen probe stays.
+                # The shell stays in fullscreen mode (its taskbar remains behind the probe),
+                # so the meter must stay hidden too. Asserted when the shell agrees: the
+                # taskbar drops WS_EX_TOPMOST while it considers a fullscreen app active.
+                $front = [WinNetMeterNative]::CreateWindowExW(
+                    0, 'STATIC', 'WinNetMeter front probe', 0x10CF0000,
+                    80, 80, 300, 200, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+                Assert-True ($front -ne [IntPtr]::Zero) 'Failed to create the front probe window'
+                try {
+                    [void][WinNetMeterNative]::SetWindowPos($front, [IntPtr](-1), 0, 0, 0, 0, 0x0003)
+                    [void][WinNetMeterNative]::SetForegroundWindow($front)
+                    [WinNetMeterNative]::NotifyWinEvent(3, $front, 0, 0)
+                    Start-Sleep -Milliseconds 300
+                    Assert-True ([WinNetMeterNative]::GetForegroundWindow() -eq $front) 'The front probe did not take the foreground'
+                    $shellFullscreen = ([WinNetMeterNative]::ExStyleOf([WinNetMeterNative]::TaskbarWindow()) -band 0x8) -eq 0
+                    $overlayWnd = Get-AppWindow $session 'WinNetMeterOverlay'
+                    if ($shellFullscreen) {
+                        Assert-True (-not $overlayWnd.Visible) 'Overlay came back over a fullscreen app when a smaller window took the foreground'
+                    } else {
+                        Write-Host '  The shell did not treat the probe as fullscreen; front-window case not asserted'
+                    }
+                } finally {
+                    [void][WinNetMeterNative]::DestroyWindow($front)
+                }
+                [void][WinNetMeterNative]::SetForegroundWindow($probe)
+                [WinNetMeterNative]::NotifyWinEvent(3, $probe, 0, 0)
+                Start-Sleep -Milliseconds 200
 
                 # 7. Model the Win+D transient: same foreground/fullscreen HWND, now minimized.
                 # WS_POPUP | WS_VISIBLE | WS_MINIMIZE = 0xB0000000

@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M11** (meters on all taskbars).
+- Last completed milestone: **M12** (shell fullscreen signal).
 
 ## 0.2.0 milestone plan
 
@@ -34,7 +34,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M10** Embedded mode (opt-in): the meter is a layered child window of the taskbar, so it
       stays visible while Start is open. Automatic fallback to the overlay.
 - [x] **M11** Meters on secondary-monitor taskbars (opt-in).
-- [ ] **M12** Shell fullscreen signal (`ABN_FULLSCREENAPP`) as an extra trigger, if it proves
+- [x] **M12** Shell fullscreen signal (`ABN_FULLSCREENAPP`) as an extra trigger, if it proves
       reliable for an appbar that reserves no space.
 - [ ] **M13** README, version 0.2.0, push, CI, tag, release, deploy to the dev machine.
 
@@ -402,3 +402,32 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   match. Use the Edit tool for those.
 - Verified: build clean; 60 unit tests; 23/23 integration checks; `AllTaskbars` 4/4 runs;
   settings window screenshot checked (new rows fit); isolation guard clean.
+
+### M12: shell fullscreen signal (2026-10-09)
+- Probe (`abprobe.cpp`, scratch): an appbar registered with `ABM_NEW` only (no `ABM_SETPOS`),
+  as a hidden popup and as a message-only window, logged notifications while a window went
+  through fullscreen states. Both variants identical: `ABN_FULLSCREENAPP` OPEN/CLOSE within
+  ~20 ms of borderless-monitor-sized + foreground, back to windowed, minimized, restored and
+  destroyed; nothing for a normal maximized window; work area unchanged; the taskbar's
+  `WS_EX_TOPMOST` bit tracked the same state. Key finding: when a **smaller window takes the
+  foreground** while the fullscreen window stays, the shell sends nothing and keeps its
+  taskbar behind the fullscreen app, but the old heuristic (foreground window only) showed
+  the overlay over the fullscreen content.
+- Adopted (`meter.cpp`): the host window (message-only) registers as such an appbar,
+  re-registers when `Shell_TrayWnd` changes (Explorer restart) and unregisters on shutdown.
+  OPEN records the foreground app window and its monitor; CLOSE clears it. The overlay is now
+  hidden if the foreground window is fullscreen (unchanged heuristic) **or** the recorded app
+  is still visible, not minimized and on that monitor, unless the shell's own taskbar or
+  desktop is in front. Anything inconsistent drops the record, so a missed CLOSE cannot hide
+  the meter for long. Embedded meters are unaffected (they hide with their taskbar).
+- Limits: one record at a time (two fullscreen apps on two monitors fall back to the heuristic
+  after the first CLOSE); whether the shell sends this for fullscreen apps on secondary
+  monitors to an appbar with no position is unknown (untestable here). Test instances are
+  killed without `ABM_REMOVE`; Explorer drops appbars whose window is gone, and an empty
+  registration reserves nothing.
+- Test: `Fullscreen` gained step 6b (smaller topmost window takes the foreground over the
+  fullscreen probe: the overlay must stay hidden), asserted when the taskbar has dropped
+  `WS_EX_TOPMOST`, i.e. when the shell agrees it is fullscreen. Negative control without the
+  shell state: fails 2/2 ("Overlay came back over a fullscreen app...").
+- Verified: build clean; 60 unit tests; 23/23 integration checks; `Fullscreen` 4/4 runs;
+  isolation guard clean.
