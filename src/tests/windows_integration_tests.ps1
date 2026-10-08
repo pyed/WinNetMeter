@@ -190,7 +190,12 @@ public static class WinNetMeterNative
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $exePath = (Resolve-Path (Join-Path $repoRoot 'src\out\WinNetMeter.exe')).Path
-$settingsPath = Join-Path $env:APPDATA 'WinNetMeter\settings.ini'
+# Every run gets its own settings file and the app uses its own Run-key value
+# name in --integration-test mode, so a real installation is never touched.
+$settingsDirectory = Join-Path ([IO.Path]::GetTempPath()) ('WinNetMeter-it-' + [guid]::NewGuid().ToString('N'))
+$settingsPath = Join-Path $settingsDirectory 'settings.ini'
+$appArguments = '--integration-test --settings "{0}"' -f $settingsPath
+$startupValueName = 'WinNetMeter.IntegrationTest'
 $mainClass = 'WinNetMeterMainTest'
 $versionHeader = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src\version.h')
 if ($versionHeader -notmatch '(?m)^#define WINNETMETER_VERSION_STRING "([^"]+)"\r?$') { throw 'Version header is malformed' }
@@ -248,31 +253,22 @@ function Wait-AppWindows([System.Diagnostics.Process]$Process) {
 
 function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n") {
     Assert-True (@(Get-RunningAppProcesses).Count -eq 0) 'A WinNetMeter process from this build is already running'
-    $settingsExisted = Test-Path -LiteralPath $settingsPath
-    $settingsBytes = if ($settingsExisted) { [IO.File]::ReadAllBytes($settingsPath) } else { $null }
-    $settingsDirectory = Split-Path -Parent $settingsPath
-    $directoryExisted = Test-Path -LiteralPath $settingsDirectory
     [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
     [IO.File]::WriteAllText($settingsPath, $SettingsContent)
 
     $process = $null
     try {
-        $process = Start-Process -FilePath $exePath -ArgumentList '--integration-test' -PassThru
+        $process = Start-Process -FilePath $exePath -ArgumentList $appArguments -PassThru
         $windows = Wait-AppWindows $process
         return [pscustomobject]@{
             Process = $process
             Windows = $windows
-            SettingsExisted = $settingsExisted
-            SettingsBytes = $settingsBytes
-            SettingsDirectoryExisted = $directoryExisted
         }
     } catch {
         if ($null -ne $process -and -not $process.HasExited) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
         }
-        if ($settingsExisted) { [IO.File]::WriteAllBytes($settingsPath, $settingsBytes) }
-        elseif (Test-Path -LiteralPath $settingsPath) { Remove-Item -LiteralPath $settingsPath -Force }
         throw
     }
 }
@@ -282,15 +278,11 @@ function Stop-TestApp($Session) {
         Stop-Process -Id $Session.Process.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $Session.Process.Id -Timeout 5 -ErrorAction SilentlyContinue
     }
-    if ($Session.SettingsExisted) {
-        [IO.File]::WriteAllBytes($settingsPath, $Session.SettingsBytes)
-    } elseif (Test-Path -LiteralPath $settingsPath) {
-        Remove-Item -LiteralPath $settingsPath -Force
-    }
-    $settingsDirectory = Split-Path -Parent $settingsPath
-    if (-not $Session.SettingsDirectoryExisted -and (Test-Path -LiteralPath $settingsDirectory) -and
-        @(Get-ChildItem -LiteralPath $settingsDirectory -Force).Count -eq 0) {
-        Remove-Item -LiteralPath $settingsDirectory -Force
+}
+
+function Remove-TestSettings {
+    if (Test-Path -LiteralPath $settingsDirectory) {
+        Remove-Item -LiteralPath $settingsDirectory -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -373,16 +365,8 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`n"
 }
 $startupKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$startupValueExisted = $false
-$startupValue = $null
 if ($Check -eq 'Preferences') {
-    try {
-        $startupValue = Get-ItemPropertyValue -LiteralPath $startupKey -Name WinNetMeter -ErrorAction Stop
-        $startupValueExisted = $true
-    } catch [System.Management.Automation.ItemNotFoundException] {
-    } catch [System.Management.Automation.PSArgumentException] {
-    }
-    Remove-ItemProperty -LiteralPath $startupKey -Name WinNetMeter -ErrorAction SilentlyContinue
+    Remove-ItemProperty -LiteralPath $startupKey -Name $startupValueName -ErrorAction SilentlyContinue
 }
 
 $session = $null
@@ -390,7 +374,7 @@ try {
     $session = Start-TestApp $testSettings
     switch ($Check) {
         'SingleInstance' {
-            $duplicates = @(1..8 | ForEach-Object { Start-Process -FilePath $exePath -ArgumentList '--integration-test' -PassThru })
+            $duplicates = @(1..8 | ForEach-Object { Start-Process -FilePath $exePath -ArgumentList $appArguments -PassThru })
             foreach ($duplicate in $duplicates) {
                 Assert-True ($duplicate.WaitForExit(3000)) 'A duplicate instance did not exit within three seconds'
                 Assert-True ($duplicate.ExitCode -eq 0) "A duplicate instance exited with code $($duplicate.ExitCode)"
@@ -400,7 +384,7 @@ try {
         }
         'DuplicateUi' {
             $before = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
-            $second = Start-Process -FilePath $exePath -ArgumentList '--integration-test' -PassThru
+            $second = Start-Process -FilePath $exePath -ArgumentList $appArguments -PassThru
             Assert-True ($second.WaitForExit(3000)) 'Second instance did not exit within three seconds'
             $after = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
             Assert-True ($second.ExitCode -eq 0) 'Duplicate launch failed instead of handing off'
@@ -766,8 +750,10 @@ try {
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
 
             Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('General', 'ShowTrayIcon', 1, $settingsPath) -eq 0) 'Tray preference was not saved'
-            $registered = Get-ItemPropertyValue -LiteralPath $startupKey -Name WinNetMeter -ErrorAction Stop
+            $registered = Get-ItemPropertyValue -LiteralPath $startupKey -Name $startupValueName -ErrorAction Stop
             Assert-True ($registered -eq ('"' + $exePath + '"')) 'Startup command does not quote the current executable'
+            $realStartup = (Get-ItemProperty -LiteralPath $startupKey).PSObject.Properties['WinNetMeter']
+            Assert-True ($null -eq $realStartup -or $realStartup.Value -ne ('"' + $exePath + '"')) 'Test instance wrote the real startup entry'
 
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
             Assert-True (-not (Get-AppWindow $session $mainClass).Visible) 'Closing did not hide the unified window'
@@ -777,18 +763,14 @@ try {
             [void][WinNetMeterNative]::SendMessageW($startup, 0x00F1, [IntPtr]::Zero, [IntPtr]::Zero)
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
             $startupProperties = Get-ItemProperty -LiteralPath $startupKey
-            Assert-True ($null -eq $startupProperties.PSObject.Properties['WinNetMeter']) 'Startup entry was not removed'
+            Assert-True ($null -eq $startupProperties.PSObject.Properties[$startupValueName]) 'Startup entry was not removed'
             'PREFERENCES_INTEGRATION_OK'
         }
     }
 } finally {
     if ($null -ne $session) { Stop-TestApp $session }
+    Remove-TestSettings
     if ($Check -eq 'Preferences') {
-        if ($startupValueExisted) {
-            New-Item -Path $startupKey -Force | Out-Null
-            Set-ItemProperty -LiteralPath $startupKey -Name WinNetMeter -Value $startupValue
-        } else {
-            Remove-ItemProperty -LiteralPath $startupKey -Name WinNetMeter -ErrorAction SilentlyContinue
-        }
+        Remove-ItemProperty -LiteralPath $startupKey -Name $startupValueName -ErrorAction SilentlyContinue
     }
 }

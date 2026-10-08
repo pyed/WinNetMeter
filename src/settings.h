@@ -57,6 +57,10 @@ void LoadSettings(AppSettings* s);
 // disk, locked profile). The on-disk file is left untouched on failure.
 bool SaveSettings(const AppSettings* s);
 void GetSettingsPath(wchar_t* buf, size_t maxLen);
+// Integration-test isolation: redirect the settings file and the Run-key value
+// name so tests never touch a real installation. nullptr restores the defaults.
+void SetSettingsPathOverride(const wchar_t* path);
+void SetStartupValueName(const wchar_t* name);
 bool IsStartWithWindowsEnabled();
 bool SetStartWithWindowsEnabled(bool enabled);
 void AddLifetimeTraffic(AppSettings* s, ULONGLONG downloaded, ULONGLONG uploaded);

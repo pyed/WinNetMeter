@@ -834,6 +834,37 @@ void TestLegacyAnsiSettingsStillLoad() {
     DeleteFileW(path);
 }
 
+// Integration tests redirect the settings file. SaveSettings, LoadSettings and
+// GetSettingsPath must all follow the override, it must be absolute (the INI
+// reader resolves relative names against %WINDIR%), and nullptr must restore it.
+void TestSettingsPathOverride() {
+    wchar_t defaultPath[MAX_PATH * 4] = {};
+    GetSettingsPath(defaultPath, _countof(defaultPath));
+
+    SetSettingsPathOverride(L".\\test_override\\settings.ini");
+    wchar_t overridden[MAX_PATH * 4] = {};
+    GetSettingsPath(overridden, _countof(overridden));
+    assert(wcsstr(overridden, L"test_override\\settings.ini") != nullptr);
+    assert(overridden[1] == L':' || (overridden[0] == L'\\' && overridden[1] == L'\\'));
+
+    AppSettings saved;
+    saved.taskbarOffset = 123;
+    assert(SaveSettings(&saved));
+    assert(GetFileAttributesW(overridden) != INVALID_FILE_ATTRIBUTES);
+    AppSettings loaded;
+    LoadSettings(&loaded);
+    assert(loaded.taskbarOffset == 123);
+
+    SetSettingsPathOverride(nullptr);
+    wchar_t restored[MAX_PATH * 4] = {};
+    GetSettingsPath(restored, _countof(restored));
+    assert(wcscmp(restored, defaultPath) == 0);
+
+    DeleteFileW(overridden);
+    RemoveDirectoryW(L".\\test_override");
+    printf("PASS: TestSettingsPathOverride\n");
+}
+
 int main() {
     printf("Running WinNetMeter Native Robustness & Regression Tests...\n");
     TestSpeedFormatting();
@@ -841,6 +872,7 @@ int main() {
     TestPrefixesAndLifetimeTotals();
     TestNetSamplerMock();
     TestSettings();
+    TestSettingsPathOverride();
     TestSaveReportsFailure();
     TestUnicodeSettingsRoundTrip();
     TestLegacyAnsiSettingsStillLoad();

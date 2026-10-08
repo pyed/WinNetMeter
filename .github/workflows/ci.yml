@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build WinNetMeter (Release x64)
         shell: cmd
@@ -47,7 +47,7 @@ jobs:
           Write-Host "Built successfully: $($item.FullName) ($($item.Length) bytes)"
 
       - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WinNetMeter-windows-x64
           path: src/out/WinNetMeter.exe
@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build WinNetMeter (Release x64)
         shell: cmd

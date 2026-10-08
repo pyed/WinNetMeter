@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cwchar>
+#include <string>
 #include "network.h"
 #include "overlay.h"
 #include "settings.h"
@@ -1460,8 +1461,38 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR commandLine, int) {
-    bool isIntegrationTest = wcsstr(commandLine, L"--integration-test") != nullptr;
+// --integration-test runs an isolated instance: its own window class and mutex,
+// a settings file that is never the real one (--settings <path>, else a fixed
+// file under %TEMP%), and its own Run-key value name.
+static bool ApplyCommandLine() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool isIntegrationTest = false;
+    std::wstring settingsPath;
+    for (int i = 1; argv && i < argc; ++i) {
+        if (wcscmp(argv[i], L"--integration-test") == 0) {
+            isIntegrationTest = true;
+        } else if (wcscmp(argv[i], L"--settings") == 0 && i + 1 < argc) {
+            settingsPath = argv[++i];
+        }
+    }
+    if (argv) LocalFree(argv);
+
+    if (isIntegrationTest) {
+        if (settingsPath.empty()) {
+            wchar_t temp[MAX_PATH] = {};
+            DWORD length = GetTempPathW(_countof(temp), temp);
+            settingsPath = std::wstring(length > 0 && length < _countof(temp) ? temp : L".\\") +
+                           L"WinNetMeter-integration-test\\settings.ini";
+        }
+        SetSettingsPathOverride(settingsPath.c_str());
+        SetStartupValueName(L"WinNetMeter.IntegrationTest");
+    }
+    return isIntegrationTest;
+}
+
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
+    bool isIntegrationTest = ApplyCommandLine();
     g_mainWindowClass = isIntegrationTest ? TEST_WINDOW_CLASS : MAIN_WINDOW_CLASS;
     HANDLE singleInstance = CreateMutexW(nullptr, TRUE,
                                          isIntegrationTest ? TEST_INSTANCE_MUTEX : SINGLE_INSTANCE_MUTEX);

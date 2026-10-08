@@ -7,22 +7,48 @@
 #include <string>
 
 static const wchar_t RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const wchar_t RUN_VALUE[] = L"WinNetMeter";
+static const wchar_t DEFAULT_RUN_VALUE[] = L"WinNetMeter";
+static std::wstring g_runValueName = DEFAULT_RUN_VALUE;
+static std::wstring g_settingsPathOverride;
 
-static std::wstring GetStartupCommand() {
+static std::wstring GetModulePath() {
     std::wstring path(32768, L'\0');
     DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
     if (length == 0 || length == path.size()) return {};
     path.resize(length);
+    return path;
+}
+
+static std::wstring GetStartupCommand() {
+    std::wstring path = GetModulePath();
+    if (path.empty()) return {};
     return L"\"" + path + L"\"";
 }
 
 static std::wstring GetDefaultSettingsPath() {
+    if (!g_settingsPathOverride.empty()) return g_settingsPathOverride;
     wchar_t appdata[MAX_PATH] = {};
     if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata) == S_OK) {
         return std::wstring(appdata) + L"\\WinNetMeter\\settings.ini";
     }
-    return L"settings.ini";
+    // The fallback must be absolute: GetPrivateProfileStringW resolves a bare
+    // file name against %WINDIR%, while the writer would use the working directory.
+    std::wstring exe = GetModulePath();
+    size_t slash = exe.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return L".\\settings.ini";
+    return exe.substr(0, slash + 1) + L"settings.ini";
+}
+
+void SetSettingsPathOverride(const wchar_t* path) {
+    g_settingsPathOverride.clear();
+    if (!path || !path[0]) return;
+    wchar_t full[MAX_PATH * 4] = {};
+    DWORD length = GetFullPathNameW(path, _countof(full), full, nullptr);
+    g_settingsPathOverride = (length > 0 && length < _countof(full)) ? full : path;
+}
+
+void SetStartupValueName(const wchar_t* name) {
+    g_runValueName = (name && name[0]) ? name : DEFAULT_RUN_VALUE;
 }
 
 static bool ParseInteger(const wchar_t* text, long* value) {
@@ -310,13 +336,13 @@ bool IsStartWithWindowsEnabled() {
     if (expected.empty()) return false;
 
     DWORD bytes = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ,
+    if (RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, g_runValueName.c_str(), RRF_RT_REG_SZ,
                      nullptr, nullptr, &bytes) != ERROR_SUCCESS || bytes == 0) {
         return false;
     }
 
     std::wstring actual(bytes / sizeof(wchar_t), L'\0');
-    if (RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ,
+    if (RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, g_runValueName.c_str(), RRF_RT_REG_SZ,
                      nullptr, actual.data(), &bytes) != ERROR_SUCCESS) {
         return false;
     }
@@ -334,11 +360,11 @@ bool SetStartWithWindowsEnabled(bool enabled) {
         std::wstring command = GetStartupCommand();
         status = command.empty()
             ? ERROR_BAD_PATHNAME
-            : RegSetValueExW(key, RUN_VALUE, 0, REG_SZ,
+            : RegSetValueExW(key, g_runValueName.c_str(), 0, REG_SZ,
                              reinterpret_cast<const BYTE*>(command.c_str()),
                              static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
     } else {
-        status = RegDeleteValueW(key, RUN_VALUE);
+        status = RegDeleteValueW(key, g_runValueName.c_str());
         if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
     }
 

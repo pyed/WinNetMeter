@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M0** (this document and `CLAUDE.md`).
+- Last completed milestone: **M1** (test isolation and tooling).
 
 ## 0.2.0 milestone plan
 
@@ -15,7 +15,7 @@ live deployed instance), low-risk fixes come before the meter-thread refactor, a
 refactor lands with no behavior change before features are built on it.
 
 - [x] **M0** `CLAUDE.md` + this file.
-- [ ] **M1** Test isolation and tooling: `--settings <path>` and a separate Run-key value name
+- [x] **M1** Test isolation and tooling: `--settings <path>` and a separate Run-key value name
       in `--integration-test` mode; harness uses a temp settings file; `run_tests.bat` uses
       `.\unit_tests.exe`; CI actions `checkout`/`upload-artifact` v4 -> v7.
 - [ ] **M2** Settings save hardening: POSIX-semantics rename, retry, in-place fallback; fix the
@@ -122,3 +122,23 @@ DWM-composed screen pixels.
 Added `CLAUDE.md` (repo guidance, including the rule to update this file per milestone) and
 this handoff. No code changes. Baseline before starting: build clean, all unit tests pass,
 15/15 integration checks pass locally.
+
+### M1: test isolation and tooling (2026-10-08)
+- `--integration-test` now also redirects the settings file (`--settings <path>`, else
+  `%TEMP%\WinNetMeter-integration-test\settings.ini`) and uses the Run-key value name
+  `WinNetMeter.IntegrationTest` (`ApplyCommandLine` in `main.cpp`; `SetSettingsPathOverride` /
+  `SetStartupValueName` in `settings.cpp`). `--settings` is ignored outside test mode.
+- The harness creates a per-run temp directory (`WinNetMeter-it-<guid>`), passes it to every
+  launch, and deletes it in `finally`. `Preferences` uses the test value name and asserts the
+  real `WinNetMeter` value was not written. The old backup/restore of the real file and real
+  Run value is gone.
+- The settings-path fallback (only when `SHGetFolderPathW` fails) is now absolute, next to the
+  exe; the old bare `settings.ini` was read from `%WINDIR%` but written to the working dir.
+- `run_tests.bat` calls `.\unit_tests.exe`. CI and release use `actions/checkout@v7` and
+  `actions/upload-artifact@v7` (not yet exercised on CI; first push will tell).
+- New unit test `TestSettingsPathOverride`.
+- Verified: build clean; unit tests pass via `.\run_tests.bat`; 15/15 integration checks;
+  the real settings file's user keys and the real Run value were unchanged across the run
+  while the deployed instance kept running; no temp directories or test Run values left.
+- Gotcha: GNU `sed` treats `\u` in a replacement as "uppercase next char"; it turned
+  `.\unit_tests.exe` into `.Nit_tests.exe`. Use the editor for edits containing backslashes.

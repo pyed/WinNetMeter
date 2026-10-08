@@ -3,7 +3,7 @@ setlocal
 
 if "%~1"=="--no-build" (
     if exist unit_tests.exe (
-        unit_tests.exe
+        .\unit_tests.exe
         exit /b %ERRORLEVEL%
     )
 )
@@ -41,4 +41,4 @@ if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliar
 where cl >nul 2>&1 || (echo ERROR: MSVC x64 compiler not found & exit /b 1)
 
 cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /utf-8 /DUNICODE /D_UNICODE unit_tests.cpp ..\network.cpp ..\settings.cpp /link advapi32.lib iphlpapi.lib shell32.lib user32.lib gdi32.lib /out:unit_tests.exe || exit /b 1
-unit_tests.exe || exit /b 1
+.\unit_tests.exe || exit /b 1
