@@ -81,7 +81,12 @@ enum {
     ID_SET_UNITS_COMBO = 2030,
     ID_SET_UP_AUTO = 2031,
     ID_SET_DOWN_AUTO = 2032,
+    ID_SET_ANCHOR_LBL = 2033,
+    ID_SET_ANCHOR_COMBO = 2034,
 };
+
+// Order of the "Meter position" choices, mapped to AppSettings::meterAnchor.
+static const int ANCHOR_CHOICES[] = { METER_ANCHOR_TRAY, METER_ANCHOR_APPS, METER_ANCHOR_LEFT, METER_ANCHOR_LEGACY };
 
 // Long enough to swallow a burst of keystrokes, short enough that a settings
 // change is on disk well before a normal exit.
@@ -125,6 +130,7 @@ struct SettingsUiState {
     HWND hwndLblDown = nullptr, hwndBtnDown = nullptr, hwndCheckDownAuto = nullptr;
     HWND hwndLblUp = nullptr, hwndBtnUp = nullptr, hwndCheckUpAuto = nullptr;
     HWND hwndLblFont = nullptr, hwndBtnFont = nullptr;
+    HWND hwndLblAnchor = nullptr, hwndComboAnchor = nullptr;
     HWND hwndLblOffset = nullptr, hwndEditOffset = nullptr, hwndSpinOffset = nullptr;
     HWND hwndLblOffsetUnit = nullptr, hwndBtnOffsetReset = nullptr;
     HWND hwndLblUnits = nullptr, hwndComboUnits = nullptr;
@@ -256,6 +262,7 @@ static void UpdateMeter() {
     state.fontFamily = g_settings.fontFamily;
     state.fontSize = g_settings.fontSize;
     state.fontStyle = g_settings.fontStyle;
+    state.anchor = g_settings.meterAnchor;
     state.taskbarOffset = g_settings.taskbarOffset;
     PushMeterState(state);
 }
@@ -302,7 +309,8 @@ static void RelayoutMainControls(int dpi) {
         { g_settingsUi.hwndComboUnit,      500, 253, 110, 120 },
         { g_settingsUi.hwndLblDecimals,    370, 292, 125,  25 },
         { g_settingsUi.hwndComboDecimals,  500, 288,  80, 120 },
-        // y=322: meter position row (anchor)
+        { g_settingsUi.hwndLblAnchor,      370, 327, 125,  25 },
+        { g_settingsUi.hwndComboAnchor,    500, 323, 200, 140 },
         { g_settingsUi.hwndLblOffset,      370, 362, 125,  25 },
         { g_settingsUi.hwndEditOffset,     500, 358,  58,  25 },
         { g_settingsUi.hwndSpinOffset,     558, 358,  18,  25 },
@@ -361,6 +369,7 @@ static void RefreshFontsAndRelayout(int dpi) {
         g_settingsUi.hwndLblDown, g_settingsUi.hwndBtnDown, g_settingsUi.hwndCheckDownAuto,
         g_settingsUi.hwndLblUp, g_settingsUi.hwndBtnUp, g_settingsUi.hwndCheckUpAuto,
         g_settingsUi.hwndLblFont, g_settingsUi.hwndBtnFont,
+        g_settingsUi.hwndLblAnchor, g_settingsUi.hwndComboAnchor,
         g_settingsUi.hwndLblOffset, g_settingsUi.hwndEditOffset,
         g_settingsUi.hwndSpinOffset, g_settingsUi.hwndLblOffsetUnit,
         g_settingsUi.hwndBtnOffsetReset, g_settingsUi.hwndLblUnits,
@@ -801,7 +810,18 @@ static void CreateSettingsControls(HWND hwnd) {
     state.hwndCheckDownAuto = CreateMainButton(hwnd, L"Automatic", ID_SET_DOWN_AUTO, BS_AUTOCHECKBOX);
     state.hwndLblFont = CreateMainLabel(hwnd, L"Taskbar meter font:", ID_SET_FONT_LBL);
     state.hwndBtnFont = CreateMainButton(hwnd, L"Choose", ID_SET_FONT_BTN);
-    state.hwndLblOffset = CreateMainLabel(hwnd, L"Taskbar meter offset:", ID_SET_OFFSET_LBL);
+    state.hwndLblAnchor = CreateMainLabel(hwnd, L"Meter position:", ID_SET_ANCHOR_LBL);
+    state.hwndComboAnchor = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+        0, 0, 0, 0, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SET_ANCHOR_COMBO)), g_hInst, nullptr);
+    const wchar_t* anchorNames[] = { L"Next to the tray", L"After the app buttons", L"Left edge",
+                                     L"Classic (fixed point)" };
+    for (const wchar_t* name : anchorNames) {
+        SendMessageW(state.hwndComboAnchor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
+    }
+    state.hwndLblOffset = CreateMainLabel(hwnd, L"Offset from there:", ID_SET_OFFSET_LBL);
     state.hwndEditOffset = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", nullptr,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_AUTOHSCROLL,
@@ -866,6 +886,11 @@ static void RefreshSettingsControls() {
     SetWindowTextW(state.hwndEditDownPrefix, g_settings.downPrefix);
     SetWindowTextW(state.hwndEditUpPrefix, g_settings.upPrefix);
     SendMessageW(state.hwndSpinOffset, UDM_SETPOS32, 0, static_cast<LPARAM>(g_settings.taskbarOffset));
+    int anchorIndex = 0;
+    for (int i = 0; i < static_cast<int>(_countof(ANCHOR_CHOICES)); ++i) {
+        if (ANCHOR_CHOICES[i] == g_settings.meterAnchor) anchorIndex = i;
+    }
+    SendMessageW(state.hwndComboAnchor, CB_SETCURSEL, static_cast<WPARAM>(anchorIndex), 0);
     SendMessageW(state.hwndComboUnits, CB_SETCURSEL, g_settings.speedBits ? 1 : 0, 0);
     RelabelMinimumUnitChoices(g_settings.speedBits != 0);
     SendMessageW(state.hwndComboUnit, CB_SETCURSEL, static_cast<WPARAM>(g_settings.minimumSpeedUnit), 0);
@@ -890,6 +915,7 @@ static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmedia
     wcscpy_s(g_settings.fontFamily, _countof(g_settings.fontFamily), state.tempSettings.fontFamily);
     g_settings.fontSize = state.tempSettings.fontSize;
     g_settings.fontStyle = state.tempSettings.fontStyle;
+    g_settings.meterAnchor = state.tempSettings.meterAnchor;
     g_settings.taskbarOffset = state.tempSettings.taskbarOffset;
     g_settings.minimumSpeedUnit = state.tempSettings.minimumSpeedUnit;
     g_settings.decimalPlaces = state.tempSettings.decimalPlaces;
@@ -922,6 +948,10 @@ static bool ApplySettings(HWND hwnd) {
     }
 
     state.tempSettings.taskbarOffset = offset;
+    int anchor = static_cast<int>(SendMessageW(state.hwndComboAnchor, CB_GETCURSEL, 0, 0));
+    if (anchor >= 0 && anchor < static_cast<int>(_countof(ANCHOR_CHOICES))) {
+        state.tempSettings.meterAnchor = ANCHOR_CHOICES[anchor];
+    }
     int units = static_cast<int>(SendMessageW(state.hwndComboUnits, CB_GETCURSEL, 0, 0));
     int unit = static_cast<int>(SendMessageW(state.hwndComboUnit, CB_GETCURSEL, 0, 0));
     int decimals = static_cast<int>(SendMessageW(state.hwndComboDecimals, CB_GETCURSEL, 0, 0));
@@ -987,6 +1017,18 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
         if (ParseTaskbarMeterOffset(text, &offset)) {
             state.tempSettings.taskbarOffset = offset;
             ApplyLiveMeterSettings(false, false);
+        }
+    } else if (id == ID_SET_ANCHOR_COMBO && code == CBN_SELCHANGE) {
+        int selection = static_cast<int>(SendMessageW(state.hwndComboAnchor, CB_GETCURSEL, 0, 0));
+        if (selection >= 0 && selection < static_cast<int>(_countof(ANCHOR_CHOICES)) &&
+            ANCHOR_CHOICES[selection] != state.tempSettings.meterAnchor) {
+            state.tempSettings.meterAnchor = ANCHOR_CHOICES[selection];
+            // Offsets are relative to the anchor, so an old one means nothing here.
+            state.tempSettings.taskbarOffset = 0;
+            state.refreshing = true;
+            SendMessageW(state.hwndSpinOffset, UDM_SETPOS32, 0, 0);
+            state.refreshing = false;
+            ApplyLiveMeterSettings();
         }
     } else if (id == ID_SET_OFFSET_RESET) {
         state.tempSettings = AppSettings();

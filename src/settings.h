@@ -11,6 +11,12 @@ constexpr size_t METER_PREFIX_CAPACITY = 32;
 // Settings files written by 0.2.0+ carry [General] SettingsVersion=2.
 constexpr int SETTINGS_VERSION = 2;
 
+// AppSettings::meterAnchor values (MeterAnchor in overlay.h).
+constexpr int METER_ANCHOR_LEGACY = 0;   // 0.1.x fixed point; only for migrated files
+constexpr int METER_ANCHOR_TRAY = 1;
+constexpr int METER_ANCHOR_APPS = 2;
+constexpr int METER_ANCHOR_LEFT = 3;
+
 // A meter colour that follows the taskbar theme: white on a dark taskbar,
 // near-black on a light one. ChooseColor never returns it (high byte is 0).
 constexpr COLORREF METER_COLOR_AUTO = 0xFF000000;
@@ -50,7 +56,8 @@ struct AppSettings {
     int showWidget = 1;                // 1 = show overlay widget, 0 = hide
     int showTrayIcon = 1;              // 1 = show notification-area icon, 0 = hide
     int startWithWindows = 0;          // Mirrors the current user's Run registry entry
-    int taskbarOffset = 0;             // Logical pixels from the automatic taskbar anchor
+    int meterAnchor = METER_ANCHOR_TRAY;   // what taskbarOffset is measured from
+    int taskbarOffset = 0;             // Logical pixels from the anchor
     MinimumSpeedUnit minimumSpeedUnit = MinimumSpeedUnit::Auto;
     int decimalPlaces = 2;
     int speedBits = 0;                 // 0 = bytes (KB/s, binary), 1 = bits (Mbps, decimal)

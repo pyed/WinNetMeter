@@ -3,7 +3,7 @@ param(
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
-                 'AdapterSelection', 'SpeedUnits', 'ThemeColors')]
+                 'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors')]
     [string]$Check
 )
 
@@ -126,6 +126,22 @@ public static class WinNetMeterNative
     private static extern UIntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
     [DllImport("iphlpapi.dll")]
     public static extern uint GetBestInterface(uint destination, out uint index);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string title);
+
+    // Screen rect of a taskbar part, found by class under Shell_TrayWnd (a path
+    // like "ReBarWindow32/MSTaskSwWClass"); null when it does not exist.
+    public static RECT? TaskbarPart(string path)
+    {
+        IntPtr window = FindWindowExW(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null);
+        foreach (var cls in path.Split('/')) {
+            if (window == IntPtr.Zero) return null;
+            window = FindWindowExW(window, IntPtr.Zero, cls, null);
+        }
+        RECT rect;
+        if (window == IntPtr.Zero || !IsWindowVisible(window) || !GetWindowRect(window, out rect)) return null;
+        return rect;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_BASIC_INFORMATION
@@ -840,6 +856,9 @@ try {
             [void][WinNetMeterNative]::GetWindowRect([WinNetMeterNative]::GetDlgItem($main.Handle, 2010), [ref]$upColorRect)
             [void][WinNetMeterNative]::GetWindowRect([WinNetMeterNative]::GetDlgItem($main.Handle, 2009), [ref]$downColorRect)
             Assert-True ($upPrefixRect.Top -lt $downPrefixRect.Top -and $upColorRect.Top -lt $downColorRect.Top) 'Settings are not ordered upload before download'
+            # A 0.1.x-style file (TaskbarOffset, no Anchor) keeps the classic fixed point.
+            $anchorCombo = [WinNetMeterNative]::GetDlgItem($main.Handle, 2034)
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($anchorCombo, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero) -eq 3) 'Legacy file did not keep the classic position'
 
             $text = New-Object Text.StringBuilder 64
             [void][WinNetMeterNative]::SendMessageTextW($downPrefix, 0x000D, [IntPtr]$text.Capacity, $text)
@@ -870,6 +889,7 @@ try {
 
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2016, [IntPtr]::Zero)
             Assert-True (Wait-IniInt 'Overlay' 'TaskbarOffset' 0) 'Meter reset did not reset offset'
+            Assert-True (Wait-IniString 'Overlay' 'Anchor' 'tray') 'Meter reset did not restore the default position'
             Assert-True (Wait-IniString 'Overlay' 'DownloadColor' 'auto') 'Meter reset did not restore the automatic download color'
             Assert-True (Wait-IniString 'Overlay' 'UploadColor' 'auto') 'Meter reset did not restore the automatic upload color'
             Assert-True (Wait-IniInt 'Overlay' 'FontStyle' 1) 'Meter reset did not reset font style'
@@ -1058,6 +1078,54 @@ try {
             & $click $downAuto 2032 $true
             Assert-True ((Get-IniString 'Overlay' 'DownloadColor') -eq 'auto') 'Automatic download color was not saved'
             'THEME_COLORS_OK'
+        }
+        'Anchors' {
+            $main = Get-AppWindow $session $mainClass
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            $anchor = [WinNetMeterNative]::GetDlgItem($main.Handle, 2034)
+            $offsetEdit = [WinNetMeterNative]::GetDlgItem($main.Handle, 2013)
+            Assert-True ($anchor -ne [IntPtr]::Zero) 'Meter position control was not found'
+            $taskbar = [WinNetMeterNative]::GetTaskbar().rc
+            $dpi = [WinNetMeterNative]::GetDpiForWindow($overlay.Handle)
+            $gap = [int][Math]::Floor((4 * $dpi + 48) / 96)
+            # The meter renders on its own thread; wait for it to satisfy a placement.
+            $waitPlaced = {
+                param([scriptblock]$Placed)
+                $deadline = [Environment]::TickCount + 3000
+                do {
+                    $rect = New-Object WinNetMeterNative+RECT
+                    [void][WinNetMeterNative]::GetWindowRect($overlay.Handle, [ref]$rect)
+                    if (& $Placed $rect) { return $rect }
+                    Start-Sleep -Milliseconds 50
+                } while ([Environment]::TickCount -lt $deadline)
+                return $null
+            }
+
+            # Fresh settings default to "next to the tray".
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($anchor, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero) -eq 0) 'Default position is not next to the tray'
+            $tray = [WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')
+            if ($tray) {
+                $placed = & $waitPlaced { param($r) $r.Right -eq ($tray.Left - $gap) }
+                Assert-True ($null -ne $placed) "Meter is not $gap px left of the tray at x=$($tray.Left)"
+            }
+
+            # Changing the anchor resets the anchor-relative offset and is saved at once.
+            [void][WinNetMeterNative]::SendMessageStringW($offsetEdit, 0x000C, [IntPtr]::Zero, '80')
+            Assert-True (Wait-IniInt 'Overlay' 'TaskbarOffset' 80) 'Offset edit was not saved'
+            Select-ComboItem $main.Handle $anchor 2034 1
+            Assert-True ((Get-IniString 'Overlay' 'Anchor') -eq 'apps') 'After-apps position was not saved'
+            Assert-True ((Get-IniString 'Overlay' 'TaskbarOffset') -eq '0') 'Changing the position did not reset the offset'
+            $apps = [WinNetMeterNative]::TaskbarPart('ReBarWindow32/MSTaskSwWClass')
+            if ($apps) {
+                $placed = & $waitPlaced { param($r) $r.Left -eq ($apps.Right + $gap) }
+                Assert-True ($null -ne $placed) "Meter is not $gap px right of the app buttons at x=$($apps.Right)"
+            }
+
+            Select-ComboItem $main.Handle $anchor 2034 2
+            Assert-True ((Get-IniString 'Overlay' 'Anchor') -eq 'left') 'Left-edge position was not saved'
+            $placed = & $waitPlaced { param($r) $r.Left -eq ($taskbar.Left + $gap) }
+            Assert-True ($null -ne $placed) 'Meter is not at the left edge of the taskbar'
+            'ANCHORS_OK'
         }
     }
 } finally {

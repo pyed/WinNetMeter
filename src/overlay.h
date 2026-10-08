@@ -21,16 +21,24 @@ inline bool IsWindowRectFullscreen(const RECT& wnd, const RECT& monitor, int tol
            wnd.bottom >= monitor.bottom - tolerance;
 }
 
+// The meter box: 132 x 40 logical px, shrunk to fit inside the taskbar.
+inline void CalculateMeterBox(const RECT& taskbar, UINT dpi, int* width, int* height, int* padding) {
+    const int barWidth = taskbar.right - taskbar.left;
+    const int barHeight = taskbar.bottom - taskbar.top;
+    *padding = ScaleOverlay(2, dpi) > 0 ? ScaleOverlay(2, dpi) : 1;
+    *width = ScaleOverlay(132, dpi);
+    *height = ScaleOverlay(40, dpi);
+    if (*width > barWidth - 2 * *padding) *width = barWidth - 2 * *padding;
+    if (*height > barHeight - 2 * *padding) *height = barHeight - 2 * *padding;
+    if (*width < 1) *width = 1;
+    if (*height < 1) *height = 1;
+}
+
 inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi, int logicalOffset = 0) {
     const int barWidth = taskbar.right - taskbar.left;
     const int barHeight = taskbar.bottom - taskbar.top;
-    const int padding = ScaleOverlay(2, dpi) > 0 ? ScaleOverlay(2, dpi) : 1;
-    int width = ScaleOverlay(132, dpi);
-    int height = ScaleOverlay(40, dpi);
-    if (width > barWidth - 2 * padding) width = barWidth - 2 * padding;
-    if (height > barHeight - 2 * padding) height = barHeight - 2 * padding;
-    if (width < 1) width = 1;
-    if (height < 1) height = 1;
+    int width = 0, height = 0, padding = 0;
+    CalculateMeterBox(taskbar, dpi, &width, &height, &padding);
 
     int x = taskbar.left + (barWidth - width) / 2;
     int y = taskbar.top + (barHeight - height) / 2;
@@ -44,6 +52,63 @@ inline RECT CalculateTaskbarOverlayRect(const RECT& taskbar, UINT edge, UINT dpi
         y = ClampOverlay(y, taskbar.top + padding, taskbar.bottom - padding - height);
     }
 
+    return { x, y, x + width, y + height };
+}
+
+// Where the meter sits on the taskbar. Legacy is the 0.1.x fixed point (350
+// logical px in from the far end), kept for files written by those releases so
+// an upgrade does not move anyone's meter. Values match AppSettings::meterAnchor.
+enum class MeterAnchor { Legacy = 0, BesideTray = 1, AfterApps = 2, LeftEdge = 3 };
+
+// Taskbar geometry the anchors refer to. tray and apps are empty when unknown
+// (e.g. a secondary taskbar without a notification area).
+struct TaskbarLayout {
+    RECT taskbar;
+    UINT edge;
+    RECT tray;   // notification area (TrayNotifyWnd)
+    RECT apps;   // task buttons (MSTaskSwWClass)
+};
+
+inline bool IsUsableTaskbarPart(const RECT& part, const RECT& taskbar) {
+    RECT overlap = {};
+    return part.right > part.left && part.bottom > part.top && IntersectRect(&overlap, &part, &taskbar);
+}
+
+// Meter rectangle for an anchor. logicalOffset moves it along the taskbar
+// (right on horizontal taskbars, down on vertical ones), relative to the anchor.
+inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, MeterAnchor anchor, int logicalOffset) {
+    if (anchor == MeterAnchor::Legacy) {
+        return CalculateTaskbarOverlayRect(layout.taskbar, layout.edge, dpi, logicalOffset);
+    }
+    const RECT& taskbar = layout.taskbar;
+    int width = 0, height = 0, padding = 0;
+    CalculateMeterBox(taskbar, dpi, &width, &height, &padding);
+    const int gap = ScaleOverlay(4, dpi);
+    const int offset = ScaleOverlay(logicalOffset, dpi);
+    const bool hasTray = IsUsableTaskbarPart(layout.tray, taskbar);
+    const bool hasApps = IsUsableTaskbarPart(layout.apps, taskbar);
+
+    int x = taskbar.left + (taskbar.right - taskbar.left - width) / 2;
+    int y = taskbar.top + (taskbar.bottom - taskbar.top - height) / 2;
+    if (layout.edge == ABE_TOP || layout.edge == ABE_BOTTOM) {
+        if (anchor == MeterAnchor::BesideTray) {
+            x = (hasTray ? layout.tray.left : taskbar.right) - gap - width;
+        } else if (anchor == MeterAnchor::AfterApps && hasApps) {
+            x = layout.apps.right + gap;
+        } else {
+            x = taskbar.left + gap;
+        }
+        x = ClampOverlay(x + offset, taskbar.left + padding, taskbar.right - padding - width);
+    } else {
+        if (anchor == MeterAnchor::BesideTray) {
+            y = (hasTray ? layout.tray.top : taskbar.bottom) - gap - height;
+        } else if (anchor == MeterAnchor::AfterApps && hasApps) {
+            y = layout.apps.bottom + gap;
+        } else {
+            y = taskbar.top + gap;
+        }
+        y = ClampOverlay(y + offset, taskbar.top + padding, taskbar.bottom - padding - height);
+    }
     return { x, y, x + width, y + height };
 }
 

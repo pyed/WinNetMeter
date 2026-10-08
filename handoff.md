@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M8** (meter thread).
+- Last completed milestone: **M9** (placement anchors).
 
 ## 0.2.0 milestone plan
 
@@ -29,7 +29,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M7** Tray icon rendered at the shell's icon size for the taskbar DPI, with alpha.
 - [x] **M8** Meter thread: move everything taskbar-related (meter windows, rendering, WinEvent
       hooks) to a dedicated thread fed by state snapshots. No behavior change.
-- [ ] **M9** Placement anchors (next to tray / after apps / left edge / legacy) with offsets
+- [x] **M9** Placement anchors (next to tray / after apps / left edge / legacy) with offsets
       relative to the anchor; legacy files keep their exact old position.
 - [ ] **M10** Embedded mode (opt-in): the meter is a layered child window of the taskbar, so it
       stays visible while Start is open. Automatic fallback to the overlay.
@@ -293,3 +293,26 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   `[NullString]::Value`.
 - Verified: build clean; 52 unit tests; 19/19 integration checks; 8/8 `ResourceLeak` runs;
   5/5 each for ForegroundZOrder, Fullscreen, WindowStyles, Preferences, ExplorerRecovery.
+
+### M9: placement anchors (2026-10-08)
+- `overlay.h`: `MeterAnchor` {Legacy, BesideTray, AfterApps, LeftEdge}, `TaskbarLayout`
+  (taskbar, edge, tray, apps), `CalculateAnchoredMeterRect` (pure; 4 logical px gap from the
+  anchor part; offset moves along the taskbar; clamped inside the padding; vertical taskbars
+  run top to bottom). `CalculateMeterBox` is shared with the legacy function, which Legacy
+  still uses unchanged. A missing or off-taskbar part falls back (tray -> far end, apps ->
+  left edge).
+- `meter.cpp` reads the parts each render: `TrayNotifyWnd` and `ReBarWindow32` ->
+  `MSTaskSwWClass` under `Shell_TrayWnd` (visible ones only).
+- Settings: `[Overlay] Anchor=tray|apps|left|legacy` (`AppSettings::meterAnchor`). A file
+  with `TaskbarOffset` but no `Anchor` (every 0.1.x file) loads as Legacy, so the dev
+  machine's `-796` keeps the meter at the far left after the upgrade. Otherwise the default
+  is "next to the tray". Unknown values -> tray.
+- UI: "Meter position" combo (IDs 2033/2034; order tray, apps, left, classic). Changing it
+  resets the offset to 0 (offsets are anchor-relative); "Reset meter" restores tray/0.
+- Tests: `TestMeterAnchors` (horizontal, fallbacks, 300%, vertical), `TestAnchorSettings`
+  (round trip, legacy detection, defaults); integration `Anchors` (exact pixel placement
+  against the live `TrayNotifyWnd` / `MSTaskSwWClass` rects, offset reset, persistence);
+  `CustomizationTotals` asserts its 0.1.x-style file stays Classic and reset restores tray.
+- Gotcha: PowerShell unwraps `Nullable<T>` returned from .NET, so use `$rect.Left`, not
+  `$rect.Value.Left`.
+- Verified: build clean; 57 unit tests; 20/20 integration checks (Anchors 3/3 extra runs).

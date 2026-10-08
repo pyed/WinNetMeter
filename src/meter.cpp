@@ -86,6 +86,25 @@ bool IsTaskbarShown(const RECT& expected, UINT edge) {
     return visibleThickness * 2 >= expectedThickness;
 }
 
+bool GetVisibleChildRect(HWND parent, const wchar_t* className, RECT* rect) {
+    HWND child = parent ? FindWindowExW(parent, nullptr, className, nullptr) : nullptr;
+    return child && IsWindowVisible(child) && GetWindowRect(child, rect);
+}
+
+// The parts of the taskbar the anchors refer to. Both are documented-class
+// child windows on Windows 10 and 11 (TrayNotifyWnd; ReBarWindow32 holding
+// MSTaskSwWClass); whatever is missing stays empty and the anchor falls back.
+TaskbarLayout GetTaskbarLayout(const RECT& taskbar, UINT edge) {
+    TaskbarLayout layout = {};
+    layout.taskbar = taskbar;
+    layout.edge = edge;
+    HWND tray = FindWindowW(L"Shell_TrayWnd", nullptr);
+    GetVisibleChildRect(tray, L"TrayNotifyWnd", &layout.tray);
+    HWND rebar = tray ? FindWindowExW(tray, nullptr, L"ReBarWindow32", nullptr) : nullptr;
+    GetVisibleChildRect(rebar, L"MSTaskSwWClass", &layout.apps);
+    return layout;
+}
+
 // ---- Fullscreen detection -----------------------------------------------------
 bool IsShellOrDesktopWindow(HWND hwnd) {
     if (!hwnd) return false;
@@ -197,7 +216,8 @@ void RenderOverlay() {
 
     UINT dpi = GetDpiForWindow(g_overlay);
     if (dpi == 0) dpi = GetDpiForSystem();
-    RECT target = CalculateTaskbarOverlayRect(taskbar, edge, dpi, g_state.taskbarOffset);
+    RECT target = CalculateAnchoredMeterRect(GetTaskbarLayout(taskbar, edge), dpi,
+                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
     int width = target.right - target.left;
     int height = target.bottom - target.top;
     int stride = width * 4;

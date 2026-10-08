@@ -212,8 +212,24 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     s->showTrayIcon = (GetPrivateProfileIntW(L"General", L"ShowTrayIcon", 1, filePath) != 0) ? 1 : 0;
 
     GetPrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"", num, _countof(num), filePath);
+    const bool hasOffset = num[0] != L'\0';
     int taskbarOffset = 0;
     if (ParseTaskbarMeterOffset(num, &taskbarOffset)) s->taskbarOffset = taskbarOffset;
+
+    // Releases before 0.2.0 always wrote TaskbarOffset and never Anchor: their
+    // offset only makes sense from the old fixed point, so keep that for them.
+    GetPrivateProfileStringW(L"Overlay", L"Anchor", L"", num, _countof(num), filePath);
+    if (!num[0]) {
+        s->meterAnchor = hasOffset ? METER_ANCHOR_LEGACY : METER_ANCHOR_TRAY;
+    } else if (_wcsicmp(num, L"legacy") == 0) {
+        s->meterAnchor = METER_ANCHOR_LEGACY;
+    } else if (_wcsicmp(num, L"apps") == 0) {
+        s->meterAnchor = METER_ANCHOR_APPS;
+    } else if (_wcsicmp(num, L"left") == 0) {
+        s->meterAnchor = METER_ANCHOR_LEFT;
+    } else {
+        s->meterAnchor = METER_ANCHOR_TRAY;
+    }
 
     GetPrivateProfileStringW(L"Overlay", L"MinimumSpeedUnit", L"Auto", num, _countof(num), filePath);
     if (_wcsicmp(num, L"KB/s") == 0) {
@@ -294,6 +310,10 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     swprintf_s(num, L"%d", ClampTaskbarMeterOffset(s->taskbarOffset));
     out += L"\r\nTaskbarOffset=";
     out += num;
+    static const wchar_t* const anchors[] = { L"legacy", L"tray", L"apps", L"left" };
+    out += L"\r\nAnchor=";
+    out += anchors[(s->meterAnchor >= METER_ANCHOR_LEGACY && s->meterAnchor <= METER_ANCHOR_LEFT)
+                       ? s->meterAnchor : METER_ANCHOR_TRAY];
 
     const wchar_t* minimumUnit = L"Auto";
     if (s->minimumSpeedUnit == MinimumSpeedUnit::Kilobytes) minimumUnit = L"KB/s";

@@ -13,7 +13,8 @@ struct MeterState {
     std::wstring fontFamily = L"Segoe UI";
     double fontSize = 8.0;
     int fontStyle = 1;
-    int taskbarOffset = 0;
+    int anchor = 1;               // MeterAnchor (overlay.h)
+    int taskbarOffset = 0;        // logical px from the anchor
 };
 
 // The taskbar meter runs on its own thread: it owns the meter windows, renders

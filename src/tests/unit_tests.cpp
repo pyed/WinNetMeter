@@ -831,6 +831,110 @@ static void AssertInside(const RECT& inner, const RECT& outer) {
     assert(inner.bottom > inner.top);
 }
 
+void TestMeterAnchors() {
+    // 1920x1080 bottom taskbar at 100%: centered apps, tray on the right.
+    TaskbarLayout bottom = {};
+    bottom.taskbar = { 0, 1040, 1920, 1080 };
+    bottom.edge = ABE_BOTTOM;
+    bottom.tray = { 1650, 1040, 1920, 1080 };
+    bottom.apps = { 700, 1040, 1220, 1080 };
+    RECT r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::BesideTray, 0);
+    AssertInside(r, bottom.taskbar);
+    assert(r.right == 1646 && r.right - r.left == 132);        // 4 px gap before the tray
+    assert(r.top == 1042 && r.bottom == 1078);                  // shrunk to fit, centred
+    r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::BesideTray, -10);
+    assert(r.right == 1636);                                    // offsets are relative
+    r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::AfterApps, 0);
+    assert(r.left == 1224);
+    r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::LeftEdge, 100);
+    assert(r.left == 104);
+    r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::LeftEdge, TASKBAR_METER_OFFSET_MIN);
+    assert(r.left == 2);                                        // clamped inside the padding
+    r = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::BesideTray, TASKBAR_METER_OFFSET_MAX);
+    assert(r.right == 1918);
+    RECT legacy = CalculateAnchoredMeterRect(bottom, 96, MeterAnchor::Legacy, 37);
+    RECT old = CalculateTaskbarOverlayRect(bottom.taskbar, ABE_BOTTOM, 96, 37);
+    assert(EqualRect(&legacy, &old));
+    printf("PASS: TestMeterAnchors (horizontal)\n");
+
+    // Unknown parts fall back: no tray -> right edge, no apps -> left edge.
+    TaskbarLayout bare = bottom;
+    bare.tray = {};
+    bare.apps = {};
+    r = CalculateAnchoredMeterRect(bare, 96, MeterAnchor::BesideTray, 0);
+    assert(r.right == 1916);
+    r = CalculateAnchoredMeterRect(bare, 96, MeterAnchor::AfterApps, 0);
+    assert(r.left == 4);
+    // A part outside the taskbar is ignored, not trusted.
+    bare.tray = { 5000, 0, 5100, 40 };
+    r = CalculateAnchoredMeterRect(bare, 96, MeterAnchor::BesideTray, 0);
+    assert(r.right == 1916);
+    printf("PASS: TestMeterAnchors (fallbacks)\n");
+
+    // 3840x2160 at 300%: everything scales by 3.
+    TaskbarLayout hidpi = {};
+    hidpi.taskbar = { 0, 2016, 3840, 2160 };
+    hidpi.edge = ABE_BOTTOM;
+    hidpi.tray = { 3069, 2016, 3840, 2160 };
+    hidpi.apps = { 1326, 2016, 2382, 2160 };
+    r = CalculateAnchoredMeterRect(hidpi, 288, MeterAnchor::BesideTray, 10);
+    assert(r.right == 3069 - 12 + 30 && r.right - r.left == 396 && r.bottom - r.top == 120);
+    r = CalculateAnchoredMeterRect(hidpi, 288, MeterAnchor::AfterApps, 0);
+    assert(r.left == 2382 + 12);
+    printf("PASS: TestMeterAnchors (300%%)\n");
+
+    // Vertical (Windows 10) taskbar on the left: anchors run top to bottom.
+    TaskbarLayout left = {};
+    left.taskbar = { 0, 0, 62, 1080 };
+    left.edge = ABE_LEFT;
+    left.tray = { 0, 900, 62, 1080 };
+    left.apps = { 0, 100, 62, 600 };
+    r = CalculateAnchoredMeterRect(left, 96, MeterAnchor::BesideTray, 0);
+    AssertInside(r, left.taskbar);
+    assert(r.bottom == 896);
+    r = CalculateAnchoredMeterRect(left, 96, MeterAnchor::AfterApps, 0);
+    assert(r.top == 604);
+    r = CalculateAnchoredMeterRect(left, 96, MeterAnchor::LeftEdge, 0);
+    assert(r.top == 4);
+    printf("PASS: TestMeterAnchors (vertical)\n");
+}
+
+void TestAnchorSettings() {
+    const wchar_t* path = L".\\test_anchor_settings.ini";
+    AppSettings defaults;
+    assert(defaults.meterAnchor == METER_ANCHOR_TRAY);
+
+    for (int anchor : { METER_ANCHOR_LEGACY, METER_ANCHOR_TRAY, METER_ANCHOR_APPS, METER_ANCHOR_LEFT }) {
+        DeleteFileW(path);
+        AppSettings saved;
+        saved.meterAnchor = anchor;
+        saved.taskbarOffset = -25;
+        assert(SaveSettingsCustom(&saved, path));
+        AppSettings loaded;
+        LoadSettingsCustom(&loaded, path);
+        assert(loaded.meterAnchor == anchor && loaded.taskbarOffset == -25);
+    }
+
+    // 0.1.x wrote TaskbarOffset (always) and no Anchor: keep the old fixed point,
+    // so e.g. -796 still puts the meter where it was.
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-796", path);
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.meterAnchor == METER_ANCHOR_LEGACY && loaded.taskbarOffset == -796);
+
+    // Neither key (new install, or a hand-written file): the new default.
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"ShowWidget", L"1", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.meterAnchor == METER_ANCHOR_TRAY);
+    WritePrivateProfileStringW(L"Overlay", L"Anchor", L"sideways", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.meterAnchor == METER_ANCHOR_TRAY);
+    DeleteFileW(path);
+    printf("PASS: TestAnchorSettings\n");
+}
+
 // Test 7: Taskbar-relative placement across edges, negative coordinates, and DPI
 void TestTaskbarPlacement() {
     const RECT bottomSecondary = { -1920, 1032, 0, 1080 };
@@ -1189,6 +1293,8 @@ int main() {
     TestLocalizedSinceDate();
     TestDefaultRouteLookup();
     TestTaskbarPlacement();
+    TestMeterAnchors();
+    TestAnchorSettings();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();
     printf("ALL TESTS PASSED\n");
