@@ -135,17 +135,22 @@ public static class WinNetMeterNative
     private static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string title);
 
     // Screen rect of a taskbar part, found by class under Shell_TrayWnd (a path
-    // like "ReBarWindow32/MSTaskSwWClass"); null when it does not exist.
+    // like "ReBarWindow32/MSTaskSwWClass"); null when the app would not use it
+    // either: missing, hidden, empty (seen: TrayNotifyWnd on the Arm CI image) or
+    // off the taskbar (IsUsableTaskbarPart in overlay.h).
     public static RECT? TaskbarPart(string path)
     {
-        IntPtr window = FindWindowExW(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null);
+        IntPtr taskbar = FindWindowExW(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null);
+        IntPtr window = taskbar;
         foreach (var cls in path.Split('/')) {
             if (window == IntPtr.Zero) return null;
             window = FindWindowExW(window, IntPtr.Zero, cls, null);
         }
-        RECT rect;
+        RECT rect, bar;
         if (window == IntPtr.Zero || !IsWindowVisible(window) || !GetWindowRect(window, out rect)) return null;
-        return rect;
+        if (rect.Right <= rect.Left || rect.Bottom <= rect.Top || !GetWindowRect(taskbar, out bar)) return null;
+        bool overlaps = rect.Left < bar.Right && bar.Left < rect.Right && rect.Top < bar.Bottom && bar.Top < rect.Bottom;
+        return overlaps ? rect : (RECT?)null;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1534,6 +1539,10 @@ try {
             if ($tray) {
                 $placed = & $waitPlaced { param($r) $r.Right -eq ($tray.Left - $gap) }
                 Assert-True ($null -ne $placed) "Meter is not $gap px left of the tray at x=$($tray.Left)"
+            } elseif ($taskbar.Right - $taskbar.Left -gt $taskbar.Bottom - $taskbar.Top) {
+                # No usable tray window (an empty one on the Arm CI image): the far end instead.
+                $placed = & $waitPlaced { param($r) $r.Right -eq ($taskbar.Right - $gap) }
+                Assert-True ($null -ne $placed) "Without a tray window the meter is not $gap px from the end of the taskbar"
             }
 
             # Changing the anchor resets the anchor-relative offset and is saved at once.
@@ -1579,16 +1588,18 @@ try {
             $contained = $meter.Rect.Left -ge $taskbar.Left -and $meter.Rect.Top -ge $taskbar.Top -and
                          $meter.Rect.Right -le $taskbar.Right -and $meter.Rect.Bottom -le $taskbar.Bottom
             Assert-True $contained 'Embedded meter is not on the taskbar'
-            # The tray can still be resizing (this instance's own icon), so poll.
-            if ([WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')) {
+            # The tray can still be resizing (this instance's own icon), so poll. Without
+            # a usable tray window the meter goes to the far end of the taskbar.
+            if ($taskbar.Right - $taskbar.Left -gt $taskbar.Bottom - $taskbar.Top) {
                 $gap = & $scale 4
                 $deadline = [Environment]::TickCount + 3000
                 do {
                     $tray = [WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')
-                    $placed = $tray -and (Get-EmbeddedMeter $session).Rect.Right -eq ($tray.Left - $gap)
+                    $end = if ($tray) { $tray.Left } else { $taskbar.Right }
+                    $placed = (Get-EmbeddedMeter $session).Rect.Right -eq ($end - $gap)
                     if (-not $placed) { Start-Sleep -Milliseconds 50 }
                 } while (-not $placed -and [Environment]::TickCount -lt $deadline)
-                Assert-True $placed "Embedded meter is not $gap px left of the tray"
+                Assert-True $placed "Embedded meter is not $gap px left of the $(if ($tray) { 'tray' } else { 'end of the taskbar' })"
             }
 
             # Double-click still opens the app; Explorer's TaskbarCreated does not duplicate it.

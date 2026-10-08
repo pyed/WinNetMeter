@@ -87,9 +87,11 @@ jobs:
         working-directory: src
         run: build.bat ${{ matrix.arch }}
 
-      - name: Describe the Runner's Desktop
+      - name: Prepare and Describe the Runner's Desktop
         shell: pwsh
-        run: ./src/tests/describe_desktop.ps1
+        run: |
+          ./src/tests/prepare_ci_desktop.ps1
+          ./src/tests/describe_desktop.ps1
 
       - name: Run Behavioral Integration Checks
         shell: pwsh
