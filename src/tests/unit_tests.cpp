@@ -935,6 +935,38 @@ void TestAnchorSettings() {
     printf("PASS: TestAnchorSettings\n");
 }
 
+void TestEmbedSetting() {
+    const wchar_t* path = L".\\test_embed_settings.ini";
+    // Opt-in: files without the key (every earlier release) keep the overlay.
+    AppSettings defaults;
+    assert(defaults.embedInTaskbar == 0);
+    DeleteFileW(path);
+    WritePrivateProfileStringW(L"Overlay", L"TaskbarOffset", L"-796", path);
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.embedInTaskbar == 0);
+
+    for (int embed : { 1, 0 }) {
+        DeleteFileW(path);
+        AppSettings saved;
+        saved.embedInTaskbar = embed;
+        assert(SaveSettingsCustom(&saved, path));
+        wchar_t text[8] = {};
+        GetPrivateProfileStringW(L"Overlay", L"Embed", L"", text, _countof(text), path);
+        assert(wcscmp(text, embed ? L"1" : L"0") == 0);
+        AppSettings roundTrip;
+        LoadSettingsCustom(&roundTrip, path);
+        assert(roundTrip.embedInTaskbar == embed);
+    }
+
+    // Any non-zero value is on, as for the other switches.
+    WritePrivateProfileStringW(L"Overlay", L"Embed", L"7", path);
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.embedInTaskbar == 1);
+    DeleteFileW(path);
+    printf("PASS: TestEmbedSetting\n");
+}
+
 // Test 7: Taskbar-relative placement across edges, negative coordinates, and DPI
 void TestTaskbarPlacement() {
     const RECT bottomSecondary = { -1920, 1032, 0, 1080 };
@@ -1295,6 +1327,7 @@ int main() {
     TestTaskbarPlacement();
     TestMeterAnchors();
     TestAnchorSettings();
+    TestEmbedSetting();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();
     printf("ALL TESTS PASSED\n");

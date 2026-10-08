@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M9** (placement anchors).
+- Last completed milestone: **M10** (embedded mode).
 
 ## 0.2.0 milestone plan
 
@@ -31,7 +31,7 @@ refactor lands with no behavior change before features are built on it.
       hooks) to a dedicated thread fed by state snapshots. No behavior change.
 - [x] **M9** Placement anchors (next to tray / after apps / left edge / legacy) with offsets
       relative to the anchor; legacy files keep their exact old position.
-- [ ] **M10** Embedded mode (opt-in): the meter is a layered child window of the taskbar, so it
+- [x] **M10** Embedded mode (opt-in): the meter is a layered child window of the taskbar, so it
       stays visible while Start is open. Automatic fallback to the overlay.
 - [ ] **M11** Meters on secondary-monitor taskbars (opt-in).
 - [ ] **M12** Shell fullscreen signal (`ABN_FULLSCREENAPP`) as an extra trigger, if it proves
@@ -90,6 +90,10 @@ DWM-composed screen pixels.
   ~50 ms after closing is lost (the taskbar is still in band 6); one issued after it returns
   to band 1 works. The shipped 0.1.6 app recovered ~300 ms after Start closed and was not
   occluded when the taskbar took focus.
+- Measured in M10 with the real Start menu (`StartMenu` check, magenta meter, pixels counted
+  on screen): overlay **0 of N** pixels visible while Start is open, embedded **N of N**.
+  After Start closes, the overlay is back 200-950 ms after Start loses the foreground when
+  only the 1 s refresh re-raises it, and within ~150 ms with the 100 ms re-raise burst.
 - WinNetMeter does not hide itself while Start is open: Start's window (720,108)-(3120,2016)
   does not cover the 3840x2160 monitor, so the fullscreen heuristic stays false.
 - **Embedding:** a plain child window of `Shell_TrayWnd` is invisible even with Start closed
@@ -111,6 +115,8 @@ DWM-composed screen pixels.
 ## Dev machine notes
 
 - Windows 11 build 26300, one 3840x2160 monitor at 300% scaling, dark taskbar, centered icons.
+  On 2026-10-09 the display was 1280x720 at 100% instead (changed outside this work); all
+  checks pass in both configurations, so do not hardcode either.
 - A deployed WinNetMeter runs from a user folder with autostart (Run key). Its settings use
   `TaskbarOffset=-796` (meter at the far left), tray icon off, `MinimumSpeedUnit=KB/s`.
   New releases must keep that placement after an upgrade.
@@ -316,3 +322,48 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
 - Gotcha: PowerShell unwraps `Nullable<T>` returned from .NET, so use `$rect.Left`, not
   `$rect.Value.Left`.
 - Verified: build clean; 57 unit tests; 20/20 integration checks (Anchors 3/3 extra runs).
+
+### M10: embedded mode (2026-10-09)
+- `meter.cpp`: with `MeterState::embedded`, the meter is a `WS_EX_LAYERED | WS_EX_NOPARENTNOTIFY`
+  `WS_CHILD` window of class `WinNetMeterEmbedded` under `Shell_TrayWnd`, drawn with the same
+  `PaintMeter` as the overlay (shared now) at parent-client coordinates (`MapWindowPoints`
+  with a rect, so a mirrored RTL taskbar maps correctly; not testable here) and kept
+  `HWND_TOP` among the taskbar's children on every render. Only one of overlay/child exists
+  at a time. Layout uses the taskbar's DPI and its window rect, so an auto-hide taskbar
+  carries the meter. No fullscreen or auto-hide tracking is needed: the child hides with the
+  taskbar. If the child cannot be created (no taskbar, or creation fails), the overlay is used.
+  A taskbar that is recreated (Explorer restart) is detected by `IsWindow`/parent checks on the
+  next render (at most 1 s). **Not exercised with a real Explorer restart** (too disruptive on
+  the dev machine); `TaskbarCreated` itself is tested.
+- The window procedure handles `WM_SETCURSOR`, `WM_MOUSEWHEEL/HWHEEL`, `WM_CONTEXTMENU` and
+  `WM_APPCOMMAND` itself, because `DefWindowProc` forwards those from a child to its parent with
+  `SendMessage`, i.e. a cross-process wait on Explorer. `WM_DPICHANGED_AFTERPARENT` refreshes.
+- Overlay mode improvement found while testing Start: after a foreground change the overlay is
+  re-raised immediately and then every 100 ms for 800 ms (`RAISE_TIMER`), because the taskbar
+  drops back from band 6 after the foreground has moved and lands above the overlay.
+- Setting `[Overlay] Embed=0|1` (`AppSettings::embedInTaskbar`, default 0, any non-zero = on).
+  UI: checkbox 2035 "Embed in taskbar (stays visible over Start)" at y=457, applied with
+  **Apply** like the other check boxes beside it. "Reset meter" does not change it (it resets
+  looks and position, not the mode).
+- Opt-in, not default, because it places a window inside Explorer's taskbar: untested
+  third-party taskbar mods and future shell changes could break it, while the overlay is the
+  long-proven path.
+- Tests: unit `TestEmbedSetting`. Integration `Embedded` (child of the taskbar, `WS_CHILD` +
+  layered, no overlay, taskbar DPI, size, exact tray-relative placement, double-click opens
+  the window, `TaskbarCreated` does not duplicate it, reset keeps the mode, Apply switches to
+  the overlay and back and persists). `StartMenu` opens the real Start menu with the Win key
+  (Escape only while Start has the foreground) and counts magenta meter pixels on screen:
+  overlay covered while open (informational), overlay back within 450 ms of Start closing in
+  3 of 3 timed closes, embedded visible while open. Prints `START_MENU_SKIPPED` (and a GitHub
+  warning) if Start cannot be opened. `ResourceLeak` now measures both modes.
+- Negative control for the re-raise burst: without it, `StartMenu` failed 4 of 4 runs (overlay
+  back after up to 953 ms). With it, 8 of 9 runs passed (back 11-123 ms after Start lost the
+  foreground); the failure was the first close after a long idle (cold Start menu), so the
+  check now opens and closes Start once, untimed, before the timed closes. With that warm-up:
+  6 of 6 passed (5-125 ms).
+- Harness gotchas: `ABM_GETTASKBARPOS` does not fill `APPBARDATA.hWnd` (use
+  `FindWindow("Shell_TrayWnd")`); under StrictMode, `$x = if (...) { @() }` is `$null`, so wrap
+  such assignments in `@(...)`.
+- Verified: build clean; 58 unit tests; 22/22 integration checks; `StartMenu` 5/5 extra runs;
+  `ResourceLeak` flat in both modes (GDI 21->21; USER 68->68 overlay, 67->67 embedded);
+  isolation guard clean.

@@ -3,7 +3,7 @@ param(
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
-                 'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors')]
+                 'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu')]
     [string]$Check
 )
 
@@ -247,29 +247,131 @@ public static class WinNetMeterNative
         return mi.rcMonitor;
     }
 
+    private static WindowInfo Describe(IntPtr hwnd)
+    {
+        RECT rect;
+        GetWindowRect(hwnd, out rect);
+        return new WindowInfo {
+            Handle = hwnd,
+            ClassName = ClassOf(hwnd),
+            Visible = IsWindowVisible(hwnd),
+            Style = unchecked((ulong)GetWindowLongPtrW(hwnd, -16).ToInt64()),
+            ExStyle = unchecked((ulong)GetWindowLongPtrW(hwnd, -20).ToInt64()),
+            Owner = GetWindow(hwnd, 4),
+            Rect = rect
+        };
+    }
+
+    public static string ClassOf(IntPtr hwnd)
+    {
+        var name = new StringBuilder(256);
+        GetClassNameW(hwnd, name, name.Capacity);
+        return name.ToString();
+    }
+
+    public static uint ProcessOf(IntPtr hwnd)
+    {
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        return processId;
+    }
+
     public static WindowInfo[] GetWindows(uint wantedProcessId)
     {
         var windows = new List<WindowInfo>();
         EnumWindows((hwnd, unused) => {
-            uint processId;
-            GetWindowThreadProcessId(hwnd, out processId);
-            if (processId != wantedProcessId) return true;
-            var name = new StringBuilder(256);
-            GetClassNameW(hwnd, name, name.Capacity);
-            RECT rect;
-            GetWindowRect(hwnd, out rect);
-            windows.Add(new WindowInfo {
-                Handle = hwnd,
-                ClassName = name.ToString(),
-                Visible = IsWindowVisible(hwnd),
-                Style = unchecked((ulong)GetWindowLongPtrW(hwnd, -16).ToInt64()),
-                ExStyle = unchecked((ulong)GetWindowLongPtrW(hwnd, -20).ToInt64()),
-                Owner = GetWindow(hwnd, 4),
-                Rect = rect
-            });
+            if (ProcessOf(hwnd) == wantedProcessId) windows.Add(Describe(hwnd));
             return true;
         }, IntPtr.Zero);
         return windows.ToArray();
+    }
+
+    public static IntPtr TaskbarWindow()
+    {
+        return FindWindowExW(IntPtr.Zero, IntPtr.Zero, "Shell_TrayWnd", null);
+    }
+
+    // A process's windows parented directly to the taskbar (the embedded meter).
+    public static WindowInfo[] GetTaskbarChildren(uint wantedProcessId)
+    {
+        var windows = new List<WindowInfo>();
+        IntPtr taskbar = TaskbarWindow();
+        if (taskbar == IntPtr.Zero) return windows.ToArray();
+        for (IntPtr child = FindWindowExW(taskbar, IntPtr.Zero, null, null); child != IntPtr.Zero;
+             child = FindWindowExW(taskbar, child, null, null)) {
+            if (ProcessOf(child) == wantedProcessId) windows.Add(Describe(child));
+        }
+        return windows.ToArray();
+    }
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+
+    public static void PressKey(byte key, bool extended)
+    {
+        uint flags = extended ? 1u : 0u;                    // KEYEVENTF_EXTENDEDKEY
+        keybd_event(key, 0, flags, UIntPtr.Zero);
+        keybd_event(key, 0, flags | 2u, UIntPtr.Zero);      // KEYEVENTF_KEYUP
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr SelectObject(IntPtr dc, IntPtr gdiObject);
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr gdiObject);
+    [DllImport("gdi32.dll")]
+    private static extern bool BitBlt(IntPtr destination, int x, int y, int width, int height,
+        IntPtr source, int sourceX, int sourceY, uint operation);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BITMAPINFO
+    {
+        public uint biSize;
+        public int biWidth, biHeight;
+        public ushort biPlanes, biBitCount;
+        public uint biCompression, biSizeImage;
+        public int biXPelsPerMeter, biYPelsPerMeter;
+        public uint biClrUsed, biClrImportant;
+        public uint mask0, mask1, mask2;   // room for colour masks
+    }
+    [DllImport("gdi32.dll")]
+    private static extern int GetDIBits(IntPtr dc, IntPtr bitmap, uint start, uint lines,
+        [Out] int[] bits, ref BITMAPINFO info, uint usage);
+
+    // Pixels of a screen rectangle, as composed on screen (layered windows
+    // included), that are within tolerance of a colour in every channel.
+    public static int CountScreenPixels(RECT rect, int red, int green, int blue, int tolerance)
+    {
+        int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+        if (width <= 0 || height <= 0) return 0;
+        IntPtr screen = GetDC(IntPtr.Zero);
+        IntPtr memory = CreateCompatibleDC(screen);
+        IntPtr bitmap = CreateCompatibleBitmap(screen, width, height);
+        try {
+            IntPtr previous = SelectObject(memory, bitmap);
+            BitBlt(memory, 0, 0, width, height, screen, rect.Left, rect.Top, 0x00CC0020 | 0x40000000);  // SRCCOPY | CAPTUREBLT
+            SelectObject(memory, previous);
+            var info = new BITMAPINFO { biSize = 40, biWidth = width, biHeight = -height, biPlanes = 1, biBitCount = 32 };
+            var bits = new int[width * height];
+            if (GetDIBits(memory, bitmap, 0, (uint)height, bits, ref info, 0) == 0) return -1;
+            int count = 0;
+            foreach (int pixel in bits) {
+                if (Math.Abs(((pixel >> 16) & 0xFF) - red) <= tolerance &&
+                    Math.Abs(((pixel >> 8) & 0xFF) - green) <= tolerance &&
+                    Math.Abs((pixel & 0xFF) - blue) <= tolerance) {
+                    ++count;
+                }
+            }
+            return count;
+        } finally {
+            DeleteObject(bitmap);
+            DeleteDC(memory);
+            ReleaseDC(IntPtr.Zero, screen);
+        }
     }
 
     public static APPBARDATA GetTaskbar()
@@ -351,18 +453,24 @@ function Get-RunningAppProcesses {
     })
 }
 
+function Get-EmbeddedMeters([System.Diagnostics.Process]$Process) {
+    @([WinNetMeterNative]::GetTaskbarChildren([uint32]$Process.Id) | Where-Object ClassName -eq 'WinNetMeterEmbedded')
+}
+
 function Wait-AppWindows([System.Diagnostics.Process]$Process) {
     for ($attempt = 0; $attempt -lt 50; ++$attempt) {
         if ($Process.HasExited) { throw "WinNetMeter exited during startup with code $($Process.ExitCode)" }
         $windows = @([WinNetMeterNative]::GetWindows([uint32]$Process.Id))
         $hasMain = @($windows | Where-Object ClassName -eq $mainClass).Count -eq 1
-        $hasOverlay = @($windows | Where-Object ClassName -eq 'WinNetMeterOverlay').Count -eq 1
-        if ($hasMain -and $hasOverlay) {
+        # The meter is a top-level overlay, or a child of the taskbar in embedded mode.
+        $hasMeter = @($windows | Where-Object ClassName -eq 'WinNetMeterOverlay').Count -eq 1 -or
+                    @(Get-EmbeddedMeters $Process).Count -eq 1
+        if ($hasMain -and $hasMeter) {
             return $windows
         }
         Start-Sleep -Milliseconds 100
     }
-    throw 'Timed out waiting for WinNetMeter host and overlay windows'
+    throw 'Timed out waiting for WinNetMeter host and meter windows'
 }
 
 function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n", [switch]$KeepSettings) {
@@ -454,6 +562,120 @@ function Get-AppWindow($Session, [string]$ClassName) {
     $match[0]
 }
 
+function Get-EmbeddedMeter($Session) {
+    $match = @(Get-EmbeddedMeters $Session.Process)
+    Assert-True ($match.Count -eq 1) "Expected one WinNetMeterEmbedded window, found $($match.Count)"
+    $match[0]
+}
+
+# Waits until the meter is in one mode only: a visible child of the taskbar and
+# no overlay, or a visible overlay and no child.
+function Wait-MeterMode($Session, [bool]$Embedded, [int]$TimeoutMs = 4000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        $children = @(Get-EmbeddedMeters $Session.Process)
+        $overlays = @([WinNetMeterNative]::GetWindows([uint32]$Session.Process.Id) | Where-Object ClassName -eq 'WinNetMeterOverlay')
+        $meters = @(if ($Embedded) { $children } else { $overlays })
+        $others = @(if ($Embedded) { $overlays } else { $children })
+        if ($meters.Count -eq 1 -and $meters[0].Visible -and $others.Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 50
+    } while ([Environment]::TickCount -lt $deadline)
+    Write-Host "  Wait-MeterMode(embedded=$Embedded) timed out: $($children.Count) embedded, $($overlays.Count) overlay"
+    return $false
+}
+
+# The embed option takes effect on Apply, like the other check boxes beside it.
+function Set-EmbedMode($Session, [IntPtr]$Main, [bool]$On) {
+    $box = [WinNetMeterNative]::GetDlgItem($Main, 2035)
+    Assert-True ($box -ne [IntPtr]::Zero) 'Embed control was not found'
+    [void][WinNetMeterNative]::SendMessageW($box, 0x00F1, [IntPtr][int]$On, [IntPtr]::Zero)
+    [void][WinNetMeterNative]::SendMessageW($Main, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
+    Assert-True (Wait-IniString 'Overlay' 'Embed' ([string][int]$On)) "Embed=$([int]$On) was not saved"
+    Assert-True (Wait-MeterMode $Session $On) "The meter did not switch to $(if ($On) { 'embedded' } else { 'overlay' }) mode"
+}
+
+# Magenta pixels on screen where the meter is (the StartMenu check draws it magenta).
+function Measure-MeterPixels($Session, [bool]$Embedded) {
+    $meter = if ($Embedded) { Get-EmbeddedMeter $Session } else { Get-AppWindow $Session 'WinNetMeterOverlay' }
+    [WinNetMeterNative]::CountScreenPixels($meter.Rect, 255, 0, 255, 40)
+}
+
+function Wait-MeterPixels($Session, [bool]$Embedded, [int]$Minimum, [int]$TimeoutMs = 3000) {
+    $best = 0
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        $best = [Math]::Max($best, (Measure-MeterPixels $Session $Embedded))
+        if ($best -ge $Minimum) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([Environment]::TickCount -lt $deadline)
+    $best
+}
+
+function Test-StartOpen {
+    $foreground = [WinNetMeterNative]::GetForegroundWindow()
+    if ($foreground -eq [IntPtr]::Zero -or [WinNetMeterNative]::ClassOf($foreground) -ne 'Windows.UI.Core.CoreWindow') {
+        return $false
+    }
+    $owner = Get-Process -Id ([WinNetMeterNative]::ProcessOf($foreground)) -ErrorAction SilentlyContinue
+    $null -ne $owner -and $owner.ProcessName -in @('StartMenuExperienceHost', 'SearchHost', 'SearchApp')
+}
+
+function Open-StartMenu {
+    [WinNetMeterNative]::PressKey(0x5B, $true)   # VK_LWIN
+    $deadline = [Environment]::TickCount + 3000
+    do {
+        Start-Sleep -Milliseconds 100
+        if (Test-StartOpen) {
+            Start-Sleep -Milliseconds 800   # let the opening animation finish
+            return $true
+        }
+    } while ([Environment]::TickCount -lt $deadline)
+    $false
+}
+
+# Escape is only sent while Start itself has the keyboard, never to whatever
+# else is in the foreground.
+function Close-StartMenu {
+    for ($attempt = 0; $attempt -lt 3 -and (Test-StartOpen); ++$attempt) {
+        [WinNetMeterNative]::PressKey(0x1B, $false)   # VK_ESCAPE
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+# Closes Start and returns how many ms after Start lost the foreground the
+# overlay was fully back on screen; -1 if it did not come back, -2 if Start
+# was not open, -3 if Start did not close.
+function Close-StartMenuTimed($Session, [int]$Minimum, [int]$TimeoutMs = 3000) {
+    $overlay = Get-AppWindow $Session 'WinNetMeterOverlay'
+    if (-not (Test-StartOpen)) {
+        $foreground = [WinNetMeterNative]::GetForegroundWindow()
+        Write-Host "  Start was not in the foreground; '$([WinNetMeterNative]::ClassOf($foreground))' was"
+        return -2
+    }
+    [WinNetMeterNative]::PressKey(0x1B, $false)   # VK_ESCAPE
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $closed = $null
+    $pixels = 0
+    while ($clock.ElapsedMilliseconds -lt $TimeoutMs) {
+        if ($null -eq $closed -and -not (Test-StartOpen)) { $closed = $clock.ElapsedMilliseconds }
+        if ($null -ne $closed) {
+            $pixels = [WinNetMeterNative]::CountScreenPixels($overlay.Rect, 255, 0, 255, 40)
+            if ($pixels -ge $Minimum) { return [int]($clock.ElapsedMilliseconds - $closed) }
+        }
+        Start-Sleep -Milliseconds 10
+    }
+    if ($null -eq $closed) {
+        Write-Host '  Start did not close after Escape'
+        return -3
+    }
+    $now = Get-AppWindow $Session 'WinNetMeterOverlay'
+    $foreground = [WinNetMeterNative]::GetForegroundWindow()
+    Write-Host ("  Overlay not back: Start closed at {0} ms, {1} of {2} pixels; overlay visible={3} at [{4},{5},{6},{7}], measured at [{8},{9},{10},{11}]; foreground '{12}'" -f
+        $closed, $pixels, $Minimum, $now.Visible, $now.Rect.Left, $now.Rect.Top, $now.Rect.Right, $now.Rect.Bottom,
+        $overlay.Rect.Left, $overlay.Rect.Top, $overlay.Rect.Right, $overlay.Rect.Bottom, [WinNetMeterNative]::ClassOf($foreground))
+    -1
+}
+
 function Get-Dumpbin {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     Assert-True (Test-Path -LiteralPath $vswhere) 'vswhere.exe was not found'
@@ -531,6 +753,11 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
     "[Overlay]`r`nShowWidget=1`r`nDownloadColor=16777215`r`nUploadColor=255`r`n"
 } elseif ($Check -eq 'SpeedUnits') {
     "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
+} elseif ($Check -eq 'Embedded') {
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=1`r`n"
+} elseif ($Check -eq 'StartMenu') {
+    # Magenta "WWWW 0 GB/s" on both lines: a constant patch of unmistakable pixels.
+    "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`nDownloadPrefix=x0057005700570057`r`nUploadPrefix=x0057005700570057`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n"
 } elseif ($Check -eq 'CustomizationTotals') {
     "[Overlay]`r`nShowWidget=1`r`nDownloadPrefix=x0044003A`r`nUploadPrefix=x0055003A`r`nDownloadColor=1971210`r`nUploadColor=6592200`r`nFontFamily=Arial`r`nFontSize=11.0`r`nFontStyle=0`r`nTaskbarOffset=37`r`nMinimumSpeedUnit=GB/s`r`nDecimalPlaces=0`r`n[Totals]`r`nDownloaded=8388608`r`nUploaded=3145728`r`nSince=2024-02-29`r`n"
 } else {
@@ -803,19 +1030,23 @@ try {
                 1..200 | ForEach-Object { [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0113, [IntPtr]1, [IntPtr]::Zero) }
                 Start-Sleep -Milliseconds 400   # the meter thread renders asynchronously
             }
-            & $round
-            $gdiBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
-            $userBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
-            $typesBefore = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
-            1..3 | ForEach-Object { & $round }
-            $gdiAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
-            $userAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
-            $typesAfter = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
             $describe = { param($types) if ($null -eq $types) { 'n/a' } else { ($types.Keys | Sort-Object | ForEach-Object { '0x{0:X2}={1}' -f $_, $types[$_] }) -join ' ' } }
-            Assert-True ($userAfter -eq $userBefore) "User objects changed: $userBefore -> $userAfter"
-            Assert-True (($gdiAfter - $gdiBefore) -le 3) ("GDI objects grew {0} -> {1} over 600 ticks; by type before [{2}] after [{3}]" -f
-                $gdiBefore, $gdiAfter, (& $describe $typesBefore), (& $describe $typesAfter))
-            "RESOURCE_COUNTS GDI=$gdiBefore->$gdiAfter USER=$userBefore->$userAfter over 600 ticks"
+            # Both meter modes render differently (top-level vs. child of the taskbar).
+            foreach ($mode in @('overlay', 'embedded')) {
+                if ($mode -eq 'embedded') { Set-EmbedMode $session $main.Handle $true }
+                & $round
+                $gdiBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
+                $userBefore = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
+                $typesBefore = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
+                1..3 | ForEach-Object { & $round }
+                $gdiAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 0)
+                $userAfter = [WinNetMeterNative]::GetGuiResources($process.Handle, 1)
+                $typesAfter = [WinNetMeterNative]::GdiCounts([uint32]$process.Id)
+                Assert-True ($userAfter -eq $userBefore) "User objects changed ($mode): $userBefore -> $userAfter"
+                Assert-True (($gdiAfter - $gdiBefore) -le 3) ("GDI objects grew ({0}) {1} -> {2} over 600 ticks; by type before [{3}] after [{4}]" -f
+                    $mode, $gdiBefore, $gdiAfter, (& $describe $typesBefore), (& $describe $typesAfter))
+                "RESOURCE_COUNTS ($mode) GDI=$gdiBefore->$gdiAfter USER=$userBefore->$userAfter over 600 ticks"
+            }
             'RESOURCE_LIFETIME_OK'
         }
         'FormattingDisplay' {
@@ -1126,6 +1357,108 @@ try {
             $placed = & $waitPlaced { param($r) $r.Left -eq ($taskbar.Left + $gap) }
             Assert-True ($null -ne $placed) 'Meter is not at the left edge of the taskbar'
             'ANCHORS_OK'
+        }
+        'Embedded' {
+            $main = Get-AppWindow $session $mainClass
+            Assert-True (Wait-MeterMode $session $true) 'Embed=1 did not start as a child of the taskbar'
+            $meter = Get-EmbeddedMeter $session
+            $child = [uint64]0x40000000
+            $layered = [uint64]0x80000
+            Assert-True (($meter.Style -band $child) -ne 0) 'Embedded meter is not WS_CHILD'
+            Assert-True (($meter.ExStyle -band $layered) -ne 0) 'Embedded meter is not layered'
+            $box = [WinNetMeterNative]::GetDlgItem($main.Handle, 2035)
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($box, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero) -eq 1) 'Embed option is not checked'
+
+            # Same size and anchor rules as the overlay, at the taskbar's DPI.
+            $taskbar = [WinNetMeterNative]::GetTaskbar().rc
+            $dpi = [WinNetMeterNative]::GetDpiForWindow([WinNetMeterNative]::TaskbarWindow())
+            Assert-True ($dpi -ge 96) "Invalid taskbar DPI: $dpi"
+            Assert-True ([WinNetMeterNative]::GetDpiForWindow($meter.Handle) -eq $dpi) 'Embedded meter DPI differs from the taskbar'
+            $scale = { param([int]$value) [int][Math]::Floor(($value * $dpi + 48) / 96) }
+            $padding = [Math]::Max(1, (& $scale 2))
+            $expectedWidth = [Math]::Max(1, [Math]::Min((& $scale 132), $taskbar.Right - $taskbar.Left - 2 * $padding))
+            $expectedHeight = [Math]::Max(1, [Math]::Min((& $scale 40), $taskbar.Bottom - $taskbar.Top - 2 * $padding))
+            Assert-True (($meter.Rect.Right - $meter.Rect.Left) -eq $expectedWidth) 'Embedded meter width is not DPI-scaled'
+            Assert-True (($meter.Rect.Bottom - $meter.Rect.Top) -eq $expectedHeight) 'Embedded meter height is not DPI-scaled'
+            $contained = $meter.Rect.Left -ge $taskbar.Left -and $meter.Rect.Top -ge $taskbar.Top -and
+                         $meter.Rect.Right -le $taskbar.Right -and $meter.Rect.Bottom -le $taskbar.Bottom
+            Assert-True $contained 'Embedded meter is not on the taskbar'
+            # The tray can still be resizing (this instance's own icon), so poll.
+            if ([WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')) {
+                $gap = & $scale 4
+                $deadline = [Environment]::TickCount + 3000
+                do {
+                    $tray = [WinNetMeterNative]::TaskbarPart('TrayNotifyWnd')
+                    $placed = $tray -and (Get-EmbeddedMeter $session).Rect.Right -eq ($tray.Left - $gap)
+                    if (-not $placed) { Start-Sleep -Milliseconds 50 }
+                } while (-not $placed -and [Environment]::TickCount -lt $deadline)
+                Assert-True $placed "Embedded meter is not $gap px left of the tray"
+            }
+
+            # Double-click still opens the app; Explorer's TaskbarCreated does not duplicate it.
+            [void][WinNetMeterNative]::SendMessageW($meter.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True (Wait-WindowVisible $session $mainClass) 'Embedded meter double-click did not open the window'
+            $message = [WinNetMeterNative]::RegisterWindowMessageW('TaskbarCreated')
+            1..3 | ForEach-Object { [void][WinNetMeterNative]::PostMessageW($main.Handle, $message, [IntPtr]::Zero, [IntPtr]::Zero) }
+            Start-Sleep -Milliseconds 500
+            Assert-True (Wait-MeterMode $session $true) 'TaskbarCreated duplicated or lost the embedded meter'
+
+            # "Reset meter" restores looks and position, not the mode.
+            [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2016, [IntPtr]::Zero)
+            Assert-True (Wait-IniString 'Overlay' 'Anchor' 'tray') 'Meter reset was not saved'
+            Assert-True ((Get-IniString 'Overlay' 'Embed') -eq '1') 'Meter reset turned embedding off'
+
+            # Switching modes swaps the windows; each switch is saved.
+            Set-EmbedMode $session $main.Handle $false
+            Set-EmbedMode $session $main.Handle $true
+            'EMBEDDED_OK'
+        }
+        'StartMenu' {
+            # The known limitation and its fix, on the real shell: Start lifts the
+            # taskbar into a z-order band above every application window, covering
+            # the topmost overlay; the embedded meter is part of the taskbar.
+            $main = Get-AppWindow $session $mainClass
+            $minimumPixels = 20
+            try {
+                Assert-True (Wait-MeterMode $session $false) 'The overlay is not up'
+                $overlayBaseline = Wait-MeterPixels $session $false 200
+                Assert-True ($overlayBaseline -ge $minimumPixels) "Only $overlayBaseline meter pixels on screen before opening Start"
+                if (-not (Open-StartMenu)) {
+                    $reason = 'Start did not open (no interactive shell?)'
+                    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::warning::StartMenu check skipped: $reason" }
+                    "START_MENU_SKIPPED: $reason"
+                } else {
+                    $overlayOpen = Measure-MeterPixels $session $false
+                    # When Start closes, the taskbar returns to its band a little after
+                    # the foreground moves and lands on top of the overlay. The overlay's
+                    # quick re-raises bring it back well before the next once-a-second
+                    # refresh would (up to 1000 ms; ~150 ms with them, measured). Three
+                    # closes at random refresh phases make a lucky pass unlikely. The
+                    # first open above also warms Start up: a cold one can be slow.
+                    Close-StartMenu
+                    $recoveries = @()
+                    for ($trial = 1; $trial -le 3; ++$trial) {
+                        Start-Sleep -Milliseconds (Get-Random -Minimum 100 -Maximum 900)
+                        Assert-True (Open-StartMenu) 'Start did not open again'
+                        $recoveries += Close-StartMenuTimed $session ([int]($overlayBaseline / 2))
+                    }
+                    Assert-True (-not (Test-StartOpen)) 'Start did not close'
+                    $slow = @($recoveries | Where-Object { $_ -lt 0 -or $_ -gt 450 })
+                    Assert-True ($slow.Count -eq 0) "Overlay was slow to come back after Start closed: $($recoveries -join ', ') ms"
+
+                    Set-EmbedMode $session $main.Handle $true
+                    $embeddedBaseline = Wait-MeterPixels $session $true 200
+                    Assert-True ($embeddedBaseline -ge $minimumPixels) "Only $embeddedBaseline embedded meter pixels on screen"
+                    Assert-True (Open-StartMenu) 'Start did not open a second time'
+                    $embeddedOpen = Wait-MeterPixels $session $true ([int]($embeddedBaseline / 2)) 1500
+                    Close-StartMenu
+                    Assert-True ($embeddedOpen -ge $embeddedBaseline / 2) "Embedded meter was covered while Start was open: $embeddedOpen of $embeddedBaseline pixels"
+                    "START_MENU overlay: $overlayOpen of $overlayBaseline pixels visible with Start open, back $($recoveries -join '/') ms after it closed; embedded: $embeddedOpen of $embeddedBaseline visible with Start open"
+                    'START_MENU_OK'
+                }
+            } finally {
+                Close-StartMenu
+            }
         }
     }
 } finally {

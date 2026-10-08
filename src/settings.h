@@ -58,6 +58,7 @@ struct AppSettings {
     int startWithWindows = 0;          // Mirrors the current user's Run registry entry
     int meterAnchor = METER_ANCHOR_TRAY;   // what taskbarOffset is measured from
     int taskbarOffset = 0;             // Logical pixels from the anchor
+    int embedInTaskbar = 0;            // 1 = draw as a child of the taskbar (stays visible over Start)
     MinimumSpeedUnit minimumSpeedUnit = MinimumSpeedUnit::Auto;
     int decimalPlaces = 2;
     int speedBits = 0;                 // 0 = bytes (KB/s, binary), 1 = bits (Mbps, decimal)

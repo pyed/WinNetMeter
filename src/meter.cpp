@@ -23,6 +23,17 @@ constexpr UINT_PTR RENDER_TIMER = 1;
 
 const wchar_t HOST_CLASS[] = L"WinNetMeterMeterHost";
 const wchar_t OVERLAY_CLASS[] = L"WinNetMeterOverlay";
+const wchar_t EMBEDDED_CLASS[] = L"WinNetMeterEmbedded";
+
+// Overlay mode: keep re-raising for a moment after a foreground change. When
+// Start closes, the taskbar leaves its higher band a little after the
+// foreground moves and lands above the overlay; a re-raise issued before that
+// is lost. Measured on Windows 11: with these re-raises the overlay was back
+// within ~150 ms of Start losing the foreground; without them, only at the
+// next refresh (up to a second later).
+constexpr UINT_PTR RAISE_TIMER = 2;
+constexpr UINT RAISE_INTERVAL_MS = 100;
+constexpr int RAISE_REPEATS = 8;
 
 // Set during start-up and shutdown by the UI thread; everything else here is
 // touched only by the meter thread.
@@ -32,7 +43,10 @@ HWND g_host = nullptr;
 HWND g_notify = nullptr;
 UINT g_openMessage = 0;
 
-HWND g_overlay = nullptr;
+HWND g_overlay = nullptr;          // overlay mode: top-level topmost layered popup
+HWND g_embedded = nullptr;         // embedded mode: layered child of the taskbar
+HWND g_embeddedParent = nullptr;   // the taskbar window g_embedded was created under
+int g_raisesLeft = 0;
 HWINEVENTHOOK g_foregroundHook = nullptr;
 HWINEVENTHOOK g_locationHook = nullptr;
 MeterState g_state;
@@ -204,29 +218,15 @@ HFONT GetMeterFont(UINT dpi) {
     return g_font;
 }
 
-void RenderOverlay() {
-    if (!g_overlay) return;
-
-    RECT taskbar = {};
-    UINT edge = ABE_BOTTOM;
-    if (!ShouldShowMeter(&taskbar, &edge)) {
-        if (IsWindowVisible(g_overlay)) ShowWindow(g_overlay, SW_HIDE);
-        return;
-    }
-
-    UINT dpi = GetDpiForWindow(g_overlay);
-    if (dpi == 0) dpi = GetDpiForSystem();
-    RECT target = CalculateAnchoredMeterRect(GetTaskbarLayout(taskbar, edge), dpi,
-                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
-    int width = target.right - target.left;
-    int height = target.bottom - target.top;
-    int stride = width * 4;
-
-    // No GetDC(NULL): screen DCs come from a process-wide cache, and with the UI
-    // thread drawing at the same time the cache grows and holds extra DCs. A
-    // screen-compatible memory DC and a null destination DC are equivalent here.
+// Draws the two meter lines into a layered window of width x height at
+// destination (screen coordinates for a top-level window, parent client
+// coordinates for a child). Returns whether the window was updated.
+bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi) {
+    const int stride = width * 4;
+    // No GetDC(NULL): a screen-compatible memory DC and a null destination DC
+    // are equivalent for UpdateLayeredWindow and avoid the shared DC cache.
     HDC memory = CreateCompatibleDC(nullptr);
-    if (!memory) return;
+    if (!memory) return false;
 
     BITMAPINFO bitmapInfo = {};
     bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -241,7 +241,7 @@ void RenderOverlay() {
     if (!bitmap || !bits) {
         if (bitmap) DeleteObject(bitmap);
         DeleteDC(memory);
-        return;
+        return false;
     }
 
     HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
@@ -263,22 +263,97 @@ void RenderOverlay() {
     ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, middle,
                       g_state.upColor, g_state.downColor);
 
-    POINT destination = { target.left, target.top };
     POINT source = { 0, 0 };
     SIZE size = { width, height };
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    BOOL updated = UpdateLayeredWindow(g_overlay, nullptr, &destination, &size,
+    BOOL updated = UpdateLayeredWindow(window, nullptr, &destination, &size,
                                        memory, &source, 0, &blend, ULW_ALPHA);
 
     if (oldFont) SelectObject(memory, oldFont);
     SelectObject(memory, oldBitmap);
     DeleteObject(bitmap);
     DeleteDC(memory);
+    return updated != FALSE;
+}
 
-    if (updated) {
+void RenderOverlay() {
+    if (!g_overlay) return;
+
+    RECT taskbar = {};
+    UINT edge = ABE_BOTTOM;
+    if (!ShouldShowMeter(&taskbar, &edge)) {
+        if (IsWindowVisible(g_overlay)) ShowWindow(g_overlay, SW_HIDE);
+        return;
+    }
+
+    UINT dpi = GetDpiForWindow(g_overlay);
+    if (dpi == 0) dpi = GetDpiForSystem();
+    RECT target = CalculateAnchoredMeterRect(GetTaskbarLayout(taskbar, edge), dpi,
+                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
+    POINT destination = { target.left, target.top };
+    if (PaintMeter(g_overlay, destination, target.right - target.left, target.bottom - target.top, dpi)) {
         const UINT show = IsWindowVisible(g_overlay) ? 0 : SWP_SHOWWINDOW;
         SetWindowPos(g_overlay, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
+    }
+}
+
+// ---- Embedded mode --------------------------------------------------------------
+// The meter as a layered child of the taskbar window. When Start or Search opens,
+// the shell lifts the taskbar into a higher z-order band than any app window can
+// reach (measured: band 1 -> 6 on Windows 11), so a topmost overlay is covered;
+// a child of the taskbar moves with it. It also hides and slides with the
+// taskbar, so no fullscreen or auto-hide tracking is needed. Plain child windows
+// are hidden under the taskbar's XAML content; layered ones are not. Layered
+// child windows require the manifest's Windows 8+ declaration.
+bool EnsureEmbedded() {
+    HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (!taskbar) return false;
+    if (g_embedded && (!IsWindow(g_embedded) || g_embeddedParent != taskbar ||
+                       GetParent(g_embedded) != taskbar)) {
+        // Explorer restarted: the old taskbar, and with it our child, is gone.
+        if (IsWindow(g_embedded)) DestroyWindow(g_embedded);
+        g_embedded = nullptr;
+    }
+    if (!g_embedded) {
+        g_embedded = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOPARENTNOTIFY, EMBEDDED_CLASS, nullptr,
+                                     WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, taskbar, nullptr,
+                                     GetModuleHandleW(nullptr), nullptr);
+        g_embeddedParent = g_embedded ? taskbar : nullptr;
+    }
+    return g_embedded != nullptr;
+}
+
+void DestroyEmbedded() {
+    if (g_embedded && IsWindow(g_embedded)) DestroyWindow(g_embedded);
+    g_embedded = nullptr;
+    g_embeddedParent = nullptr;
+}
+
+void RenderEmbedded() {
+    RECT docked = {};
+    UINT edge = ABE_BOTTOM;
+    RECT taskbar = {};
+    if (!GetTaskbarPosition(&docked, &edge) || !GetWindowRect(g_embeddedParent, &taskbar)) {
+        ShowWindow(g_embedded, SW_HIDE);
+        return;
+    }
+    // Lay out against the taskbar window's own rectangle: the child's position is
+    // relative to it, so an auto-hiding taskbar carries the meter as it slides.
+    UINT dpi = GetDpiForWindow(g_embeddedParent);
+    if (dpi == 0) dpi = GetDpiForSystem();
+    RECT target = CalculateAnchoredMeterRect(GetTaskbarLayout(taskbar, edge), dpi,
+                                             static_cast<MeterAnchor>(g_state.anchor), g_state.taskbarOffset);
+    const int width = target.right - target.left;
+    const int height = target.bottom - target.top;
+    // Two points are mapped as a rectangle, which keeps left < right if the
+    // taskbar is mirrored (right-to-left layouts).
+    MapWindowPoints(nullptr, g_embeddedParent, reinterpret_cast<POINT*>(&target), 2);
+    POINT destination = { target.left, target.top };
+    if (PaintMeter(g_embedded, destination, width, height, dpi)) {
+        // Above the taskbar's own child windows (its XAML host covers the whole bar).
+        const UINT show = IsWindowVisible(g_embedded) ? 0 : SWP_SHOWWINDOW;
+        SetWindowPos(g_embedded, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show);
     }
 }
 
@@ -291,20 +366,38 @@ void EnsureOverlayTopmost() {
     SetWindowPos(g_overlay, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
+// Serves both meter windows. The embedded one is a child of another process's
+// window, and DefWindowProc forwards some messages from a child to its parent
+// with SendMessage; those are handled here so the meter thread never waits on
+// Explorer.
 LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
-        RenderOverlay();
+        if (hwnd == g_embedded) {
+            RenderEmbedded();
+        } else {
+            RenderOverlay();
+        }
         return 0;
     }
     case WM_DPICHANGED:
+    case WM_DPICHANGED_AFTERPARENT:
         PostMessageW(g_host, WM_METER_REFRESH, 0, 0);
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
+    case WM_SETCURSOR:
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+    case WM_CONTEXTMENU:
+        return 0;
+    case WM_APPCOMMAND:
+        return TRUE;
     case WM_LBUTTONDBLCLK:
         // Posted, never sent: the meter thread must not wait on the UI thread.
         PostMessageW(g_notify, g_openMessage, 0, 0);
@@ -315,15 +408,26 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// Creates or destroys the overlay to match the state, then renders it.
+void DestroyOverlay() {
+    if (g_overlay) DestroyWindow(g_overlay);
+    g_overlay = nullptr;
+}
+
+// Creates, swaps or destroys the meter window to match the state, then renders.
 void SyncOverlay() {
     if (!g_state.show) {
-        if (g_overlay) {
-            DestroyWindow(g_overlay);
-            g_overlay = nullptr;
-        }
+        DestroyOverlay();
+        DestroyEmbedded();
         return;
     }
+    // Embedded when asked and possible; the overlay is the fallback (no taskbar
+    // window, or the child could not be created).
+    if (g_state.embedded && EnsureEmbedded()) {
+        DestroyOverlay();
+        RenderEmbedded();
+        return;
+    }
+    DestroyEmbedded();
     if (!g_overlay) {
         RECT taskbar = {};
         UINT edge = ABE_BOTTOM;
@@ -382,8 +486,10 @@ void Shutdown() {
     if (g_foregroundHook) UnhookWinEvent(g_foregroundHook);
     if (g_locationHook) UnhookWinEvent(g_locationHook);
     g_foregroundHook = g_locationHook = nullptr;
-    if (g_overlay) DestroyWindow(g_overlay);
-    g_overlay = nullptr;
+    KillTimer(g_host, RENDER_TIMER);
+    KillTimer(g_host, RAISE_TIMER);
+    DestroyOverlay();
+    DestroyEmbedded();
     if (g_font) DeleteObject(g_font);
     g_font = nullptr;
     // Free snapshots that were still queued.
@@ -412,16 +518,25 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_renderPending = false;
             g_lastRender = GetTickCount64();
             SyncOverlay();
+        } else if (wp == RAISE_TIMER) {
+            EnsureOverlayTopmost();
+            if (--g_raisesLeft <= 0) KillTimer(hwnd, RAISE_TIMER);
         }
         return 0;
     case WM_METER_REFRESH:
         SyncOverlay();
         return 0;
     case WM_METER_CHECK:
+        // Fullscreen tracking only matters to the overlay; the embedded meter
+        // hides with the taskbar.
         RenderOverlay();
         return 0;
     case WM_METER_TOPMOST:
-        EnsureOverlayTopmost();
+        if (g_overlay) {
+            EnsureOverlayTopmost();
+            g_raisesLeft = RAISE_REPEATS;
+            SetTimer(hwnd, RAISE_TIMER, RAISE_INTERVAL_MS, nullptr);
+        }
         return 0;
     case WM_METER_QUIT:
         Shutdown();
@@ -445,6 +560,8 @@ DWORD WINAPI MeterThread(void*) {
     overlay.hInstance = instance;
     overlay.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     overlay.lpszClassName = OVERLAY_CLASS;
+    RegisterClassExW(&overlay);
+    overlay.lpszClassName = EMBEDDED_CLASS;   // same behaviour, distinct for diagnostics and tests
     RegisterClassExW(&overlay);
 
     g_host = CreateWindowExW(0, HOST_CLASS, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);

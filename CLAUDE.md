@@ -17,10 +17,12 @@ from `handoff.md` alone, without this conversation.
 
 | Path | Contents |
 |---|---|
-| `src/main.cpp` | Win32 UI (status + settings window), tray icon, taskbar meter, lifecycle |
+| `src/main.cpp` | Win32 UI (status + settings window), tray icon, adapter choice, lifecycle |
+| `src/meter.{h,cpp}` | The taskbar meter on its own thread: overlay or embedded window, rendering, hooks |
+| `src/render.{h,cpp}` | Tray icon rendering (unit-testable) |
 | `src/network.{h,cpp}` | Interface enumeration (IP Helper), `NetSampler`, speed/byte formatting |
 | `src/settings.{h,cpp}` | `AppSettings`, INI persistence (atomic write), Run-key startup registration |
-| `src/overlay.h` | Header-only geometry and alpha helpers, unit-testable |
+| `src/overlay.h` | Header-only geometry (anchors) and alpha helpers, unit-testable |
 | `src/app.rc`, `src/version.h` | Resources, manifest, version (single source of truth) |
 | `src/tests/unit_tests.cpp` | Native unit tests: plain `assert`, one `PASS:` line per test |
 | `src/tests/windows_integration_tests.ps1` | Behavioral checks against the built exe |
