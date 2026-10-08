@@ -4,9 +4,22 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Status
 
-- Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
-- In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M12** (shell fullscreen signal); **M13** (release) in progress.
+- Released: **v0.2.0** (tag `v0.2.0`, 2026-10-09), the plan below, driven by the second audit
+  (2026-10-08). Deployed on the dev machine.
+- Last completed milestone: **M13**. No work in progress; see "Open items" for what next.
+
+## Open items
+
+- Real multi-monitor hardware: meters on secondary taskbars are only tested against a
+  stand-in window (M11), including the Windows 10 class names and the per-monitor DPI path.
+- Windows 10: nothing in 0.2.0 was run on Windows 10 (embedded mode, the secondary-taskbar
+  classes, `ABN_FULLSCREENAPP`). The manifest and imports still allow 1607+.
+- A real Explorer restart with embedded mode on (only `TaskbarCreated` is tested).
+- Embedded mode is opt-in; consider making it the default after field feedback.
+- `StartMenu` recovery budget: 450 ms; CI measured 78-202 ms, locally 5-125 ms. Watch for
+  flakes before tightening or loosening it.
+- `ABN_POSCHANGED`/`ABN_STATECHANGE` now reach the meter thread and are ignored; they could
+  trigger an immediate re-layout instead of waiting for the 1 s refresh.
 
 ## 0.2.0 milestone plan
 
@@ -36,7 +49,7 @@ refactor lands with no behavior change before features are built on it.
 - [x] **M11** Meters on secondary-monitor taskbars (opt-in).
 - [x] **M12** Shell fullscreen signal (`ABN_FULLSCREENAPP`) as an extra trigger, if it proves
       reliable for an appbar that reserves no space.
-- [ ] **M13** README, version 0.2.0, push, CI, tag, release, deploy to the dev machine.
+- [x] **M13** README, version 0.2.0, push, CI, tag, release, deploy to the dev machine.
 
 ## Verified findings that drive this work
 
@@ -118,8 +131,10 @@ DWM-composed screen pixels.
   On 2026-10-09 the display was 1280x720 at 100% instead (changed outside this work); all
   checks pass in both configurations, so do not hardcode either.
 - A deployed WinNetMeter runs from a user folder with autostart (Run key). Its settings use
-  `TaskbarOffset=-796` (meter at the far left), tray icon off, `MinimumSpeedUnit=KB/s`.
-  New releases must keep that placement after an upgrade.
+  `TaskbarOffset=-796` (meter at the far left; `Anchor=legacy` since 0.2.0), tray icon off,
+  `MinimumSpeedUnit=KB/s`. New releases must keep that placement after an upgrade. It runs
+  **0.2.0** since 2026-10-09; the 0.1.6 exe and settings are kept next to the originals as
+  `*.0.1.6.bak`.
 - `NoDefaultCurrentDirectoryInExePath=1` is set (see `CLAUDE.md`).
 
 ## Milestone log
@@ -446,3 +461,15 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   1 decimal, tray off, totals preserved (471.28 GB / 144.88 GB since 31/08/2026); the saved copy
   gained `SettingsVersion=2`, `Anchor=legacy`, `Embed=0`, `AllTaskbars=0`, `SpeedUnits=bytes`,
   colours `auto`, `[Network] Adapter=auto`; the live file was untouched.
+- Pushed `main` (14 commits); CI run 37853022463 green: build + unit tests on VS 2026, PE
+  checks, and all 20 behavioral checks on the runner. Start opened there too: overlay 0 of 553
+  pixels with Start open, back 202/78/191 ms after it closed; embedded 553 of 553; Fullscreen
+  step 6b asserted (the runner's shell went fullscreen); ResourceLeak flat in both modes.
+- Tagged `v0.2.0` (annotated); release run 37853244379 published `WinNetMeter v0.2.0` with
+  `WinNetMeter-v0.2.0-windows-x64.zip`, `WinNetMeter.exe` and both `.sha256` files.
+- Deployed on the dev machine (scratch `m13/deploy.ps1`): downloaded the release exe and its
+  checksum into a fresh directory, SHA-256 matched (`e45a2204...c651`), stopped 0.1.6 through
+  its Exit command (it saved its totals), backed up the exe and settings as `*.0.1.6.bak`,
+  replaced the exe and started it through `explorer.exe` (parent: explorer, as at logon). The
+  0.2.0 meter came up at the same rectangle [2,676,134,716]; the Run value is unchanged; the
+  live settings file migrated on 0.2.0's first save exactly as rehearsed.
