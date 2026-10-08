@@ -93,7 +93,9 @@ int GetAdapters(AdapterInfo* out, int maxCount) {
                                 r.Type == ADAPTER_TYPE_GIGABIT ||
                                 r.Type == ADAPTER_TYPE_PPP ||
                                 r.Type == ADAPTER_TYPE_VIRTUAL ||
-                                r.Type == ADAPTER_TYPE_TUNNEL);
+                                r.Type == ADAPTER_TYPE_TUNNEL ||
+                                r.Type == ADAPTER_TYPE_WWANPP ||
+                                r.Type == ADAPTER_TYPE_WWANPP2);
             if (isSupported) {
                 out[count].luid = r.InterfaceLuid;
                 out[count].ifIndex = r.InterfaceIndex;
@@ -106,6 +108,54 @@ int GetAdapters(AdapterInfo* out, int maxCount) {
         FreeMibTable(table);
     }
     return count;
+}
+
+bool GetDefaultRouteLuid(NET_LUID* luid) {
+    if (!luid) return false;
+    luid->Value = 0;
+    // Public resolver addresses, written without htonl/inet_pton so the exe does
+    // not gain a ws2_32 dependency. 1.1.1.1 reads the same in either byte order.
+    SOCKADDR_IN v4 = {};
+    v4.sin_family = AF_INET;
+    v4.sin_addr.S_un.S_addr = 0x01010101;
+    DWORD index = 0;
+    if (GetBestInterfaceEx(reinterpret_cast<SOCKADDR*>(&v4), &index) != NO_ERROR) {
+        static const BYTE address[16] = { 0x26, 0x06, 0x47, 0x00, 0x47, 0x00, 0, 0,
+                                          0, 0, 0, 0, 0, 0, 0x11, 0x11 };  // 2606:4700:4700::1111
+        SOCKADDR_IN6 v6 = {};
+        v6.sin6_family = AF_INET6;
+        memcpy(&v6.sin6_addr, address, sizeof(address));
+        if (GetBestInterfaceEx(reinterpret_cast<SOCKADDR*>(&v6), &index) != NO_ERROR) return false;
+    }
+    return ConvertInterfaceIndexToLuid(index, luid) == NO_ERROR && luid->Value != 0;
+}
+
+int ChooseAdapter(const AdapterInfo* list, int count, bool automatic, NET_LUID defaultRoute,
+                  NET_LUID savedLuid, const wchar_t* savedAlias) {
+    if (!list || count <= 0) return -1;
+    if (automatic) {
+        if (defaultRoute.Value == 0) return -1;
+        for (int i = 0; i < count; ++i) {
+            if (list[i].luid.Value == defaultRoute.Value) return i;
+        }
+        return -1;
+    }
+    if (savedLuid.Value != 0) {
+        for (int i = 0; i < count; ++i) {
+            if (list[i].luid.Value == savedLuid.Value) return i;
+        }
+    }
+    int match = -1;
+    int matches = 0;
+    if (savedAlias && savedAlias[0]) {
+        for (int i = 0; i < count; ++i) {
+            if (wcscmp(list[i].name, savedAlias) == 0) {
+                match = i;
+                ++matches;
+            }
+        }
+    }
+    return matches == 1 ? match : -1;
 }
 
 static LARGE_INTEGER GetQpcFrequency() {

@@ -147,9 +147,8 @@ static HICON g_hCurrentTrayIcon = nullptr;
 static UINT g_uTaskbarCreatedMsg = 0;
 static NetSampler g_sampler;
 static AppSettings g_settings;
-static NET_LUID g_selectedLuid = {};
-static wchar_t g_selectedAlias[128] = L"";
-static NET_LUID g_comboLuids[64] = {};
+static NET_LUID g_selectedLuid = {};     // adapter being metered right now (0 = none)
+static NET_LUID g_comboLuids[64] = {};   // adapter behind combo item i + 1 (item 0 is Automatic)
 static int g_comboLuidCount = 0;
 static int g_currentDpi = 96;
 static int g_overlayFontDpi = 0;
@@ -175,7 +174,7 @@ static void UpdateTrayIcon();
 static void SetupTrayIcon();
 static void RemoveTrayIcon();
 static void RefreshFontsAndRelayout(int dpi);
-static void PopulateAdapters(bool isInitialStartup = false);
+static void PopulateAdapters();
 static HFONT CreateOverlayFontFromSettings(const AppSettings& s, int dpi);
 static void RefreshSettingsControls();
 static void UpdateTotalValues();
@@ -846,15 +845,134 @@ static void CreateOrUpdateOverlay() {
     }
 }
 
+// ---- Adapter selection -------------------------------------------------------
+// The persisted choice (g_settings.adapterAuto / adapterLuid / adapterAlias) is
+// the source of truth; g_selectedLuid is what that choice resolves to now.
 static ULONGLONG g_lastFailTick = 0;
-static void OnTimerTick() {
-    if (g_selectedLuid.Value == 0) {
-        // Disconnected / waiting for reconnect: rate-limited refresh at most every 3s
-        ULONGLONG now = GetTickCount64();
-        if (now - g_lastFailTick >= 3000) {
-            g_lastFailTick = now;
-            PopulateAdapters(false);
+
+static void SetMeteredAdapter(NET_LUID luid, bool newSession) {
+    if (luid.Value == g_selectedLuid.Value) return;
+    g_selectedLuid = luid;
+    if (newSession) {
+        g_sampler.Reset(luid);
+    } else {
+        g_sampler.Rebind(luid);   // same connection on another adapter: keep session totals
+    }
+}
+
+// Automatic: the adapter carrying the default route (metered even if its type
+// is not in the list). Manual: the remembered choice, matched by LUID, then by
+// name. Zero when it cannot be found right now.
+static NET_LUID ResolveAdapter(const AdapterInfo* list, int count) {
+    NET_LUID none = {};
+    if (g_settings.adapterAuto) {
+        NET_LUID route = {};
+        return GetDefaultRouteLuid(&route) ? route : none;
+    }
+    NET_LUID saved = {};
+    saved.Value = g_settings.adapterLuid;
+    int index = ChooseAdapter(list, count, false, none, saved, g_settings.adapterAlias);
+    if (index < 0) return none;
+    g_settings.adapterLuid = list[index].luid.Value;   // may have come back under a new LUID
+    return list[index].luid;
+}
+
+static void BuildAutomaticLabel(wchar_t* out, size_t maxLen) {
+    NET_LUID route = {};
+    wchar_t alias[NDIS_IF_MAX_STRING_SIZE + 1] = {};
+    if (GetDefaultRouteLuid(&route) &&
+        ConvertInterfaceLuidToAlias(&route, alias, _countof(alias)) == NO_ERROR && alias[0]) {
+        _snwprintf_s(out, maxLen, _TRUNCATE, L"Automatic (%s)", alias);
+    } else {
+        wcscpy_s(out, maxLen, L"Automatic");
+    }
+}
+
+static void SelectCurrentAdapterInCombo() {
+    int selection = -1;
+    if (g_settings.adapterAuto) {
+        selection = 0;
+    } else if (g_selectedLuid.Value != 0) {
+        for (int i = 0; i < g_comboLuidCount; ++i) {
+            if (g_comboLuids[i].Value == g_selectedLuid.Value) {
+                selection = i + 1;
+                break;
+            }
         }
+    }
+    SendMessageW(g_combo, CB_SETCURSEL, static_cast<WPARAM>(selection), 0);
+}
+
+// Relabels the Automatic item when the internet connection moves, without
+// disturbing the selection or an open dropdown.
+static void RefreshAutomaticItem() {
+    if (!g_combo || SendMessageW(g_combo, CB_GETDROPPEDSTATE, 0, 0)) return;
+    wchar_t label[NDIS_IF_MAX_STRING_SIZE + 16] = {};
+    BuildAutomaticLabel(label, _countof(label));
+    wchar_t current[NDIS_IF_MAX_STRING_SIZE + 16] = {};
+    if (SendMessageW(g_combo, CB_GETLBTEXTLEN, 0, 0) < static_cast<LRESULT>(_countof(current))) {
+        SendMessageW(g_combo, CB_GETLBTEXT, 0, reinterpret_cast<LPARAM>(current));
+    }
+    if (wcscmp(current, label) == 0) return;
+    int selection = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
+    SendMessageW(g_combo, CB_DELETESTRING, 0, 0);
+    SendMessageW(g_combo, CB_INSERTSTRING, 0, reinterpret_cast<LPARAM>(label));
+    SendMessageW(g_combo, CB_SETCURSEL, static_cast<WPARAM>(selection), 0);
+}
+
+static void PopulateAdapters() {
+    AdapterInfo list[64];
+    int count = GetAdapters(list, 64);
+
+    SendMessageW(g_combo, CB_RESETCONTENT, 0, 0);
+    wchar_t label[NDIS_IF_MAX_STRING_SIZE + 16] = {};
+    BuildAutomaticLabel(label, _countof(label));
+    SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    g_comboLuidCount = 0;
+    for (int i = 0; i < count; ++i) {
+        int item = static_cast<int>(SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(list[i].name)));
+        if (item >= 1 && item <= static_cast<int>(_countof(g_comboLuids))) {
+            g_comboLuids[item - 1] = list[i].luid;
+            g_comboLuidCount = max(g_comboLuidCount, item);
+        }
+    }
+    SelectCurrentAdapterInCombo();
+}
+
+static void InitializeAdapterSelection() {
+    AdapterInfo list[64];
+    int count = GetAdapters(list, 64);
+    g_selectedLuid = ResolveAdapter(list, count);
+    g_sampler.Reset(g_selectedLuid);
+    PopulateAdapters();
+}
+
+// Manual mode only: the chosen adapter vanished or failed to sample; look for
+// it again (same LUID, or the same name under a new LUID). Never substitutes a
+// different adapter.
+static void RecoverManualAdapter() {
+    ULONGLONG now = GetTickCount64();
+    if (now - g_lastFailTick < 3000) return;
+    g_lastFailTick = now;
+    AdapterInfo list[64];
+    int count = GetAdapters(list, 64);
+    NET_LUID luid = ResolveAdapter(list, count);
+    if (luid.Value != g_selectedLuid.Value) {
+        SetMeteredAdapter(luid, false);
+        if (!SendMessageW(g_combo, CB_GETDROPPEDSTATE, 0, 0)) PopulateAdapters();
+    }
+}
+
+static void OnTimerTick() {
+    if (g_settings.adapterAuto) {
+        // Follow the internet connection as it moves (Wi-Fi <-> Ethernet, VPN up/down).
+        NET_LUID route = {};
+        if (GetDefaultRouteLuid(&route) && route.Value != g_selectedLuid.Value) {
+            SetMeteredAdapter(route, false);
+            RefreshAutomaticItem();
+        }
+    } else if (g_selectedLuid.Value == 0) {
+        RecoverManualAdapter();
     }
 
     if (g_selectedLuid.Value == 0) {
@@ -884,13 +1002,8 @@ static void OnTimerTick() {
             g_lastTotalsSaveTick = now;
         }
     } else {
-        // Sampling failed (adapter disconnected/disabled): rate-limited refresh at most every 3s
-        ULONGLONG now = GetTickCount64();
-        if (now - g_lastFailTick >= 3000) {
-            g_lastFailTick = now;
-            PopulateAdapters(false);
-        }
-
+        // Sampling failed (adapter removed). Automatic mode re-resolves next tick.
+        if (!g_settings.adapterAuto) RecoverManualAdapter();
         UpdateSpeedValues(0, 0);
     }
 
@@ -900,76 +1013,27 @@ static void OnTimerTick() {
 
 static void OnComboSelectionChanged() {
     int sel = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
-    if (sel >= 0 && sel < g_comboLuidCount) {
-        NET_LUID luid = g_comboLuids[sel];
-        SendMessageW(g_combo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(g_selectedAlias));
-        if (luid.Value != g_selectedLuid.Value) {
-            g_selectedLuid = luid;
-            g_sampler.Reset(luid);
-            UpdateSpeedValues(0, 0);
-            UpdateTotalValues();
-            UpdateTrayIcon();
-            CreateOrUpdateOverlay();
-        }
-    }
-}
-
-static void PopulateAdapters(bool isInitialStartup) {
-    SendMessageW(g_combo, CB_RESETCONTENT, 0, 0);
-
-    AdapterInfo list[64];
-    int count = GetAdapters(list, 64);
-    g_comboLuidCount = 0;
-
-    int exactLuidIdx = -1;
-    int aliasMatchIdx = -1;
-    int aliasMatchCount = 0;
-    int initialUpIdx = -1;
-
-    for (int i = 0; i < count; ++i) {
-        int item = static_cast<int>(SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(list[i].name)));
-        if (item >= 0 && item < 64) {
-            g_comboLuids[item] = list[i].luid;
-            g_comboLuidCount = max(g_comboLuidCount, item + 1);
-
-            if (isInitialStartup) {
-                if (list[i].status == IfOperStatusUp && initialUpIdx < 0) {
-                    initialUpIdx = item;
-                }
-            } else {
-                if (list[i].luid.Value == g_selectedLuid.Value && g_selectedLuid.Value != 0) {
-                    exactLuidIdx = item;
-                }
-                if (g_selectedAlias[0] != L'\0' && wcscmp(list[i].name, g_selectedAlias) == 0) {
-                    aliasMatchIdx = item;
-                    ++aliasMatchCount;
-                }
-            }
-        }
-    }
-
-    if (isInitialStartup) {
-        int chosen = (initialUpIdx >= 0) ? initialUpIdx : ((count > 0) ? 0 : -1);
-        if (chosen >= 0) {
-            SendMessageW(g_combo, CB_SETCURSEL, chosen, 0);
-            g_selectedLuid = g_comboLuids[chosen];
-            SendMessageW(g_combo, CB_GETLBTEXT, chosen, reinterpret_cast<LPARAM>(g_selectedAlias));
-            g_sampler.Reset(g_selectedLuid);
-        }
+    NET_LUID target = {};
+    if (sel == 0) {
+        g_settings.adapterAuto = 1;
+        GetDefaultRouteLuid(&target);
+    } else if (sel >= 1 && sel <= g_comboLuidCount) {
+        target = g_comboLuids[sel - 1];
+        g_settings.adapterAuto = 0;
+        g_settings.adapterLuid = target.Value;
+        // Item text is the adapter alias (at most 127 characters, see AdapterInfo::name).
+        SendMessageW(g_combo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(g_settings.adapterAlias));
     } else {
-        if (exactLuidIdx >= 0) {
-            SendMessageW(g_combo, CB_SETCURSEL, exactLuidIdx, 0);
-        } else if (aliasMatchCount == 1 && aliasMatchIdx >= 0) {
-            // Unambiguous reconnect on new LUID: rebind & rebaseline sampler without losing totals
-            SendMessageW(g_combo, CB_SETCURSEL, aliasMatchIdx, 0);
-            g_selectedLuid = g_comboLuids[aliasMatchIdx];
-            g_sampler.Rebind(g_selectedLuid);
-        } else {
-            // Disappeared or ambiguous match: do NOT fall back to an unrelated adapter!
-            // Keep g_selectedAlias intact for future recovery, set LUID to 0 (disconnected).
-            SendMessageW(g_combo, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
-            g_selectedLuid.Value = 0;
-        }
+        return;
+    }
+    PersistSettingsNow();
+
+    if (target.Value != g_selectedLuid.Value) {
+        SetMeteredAdapter(target, true);   // the user picked another adapter: new session
+        UpdateSpeedValues(0, 0);
+        UpdateTotalValues();
+        UpdateTrayIcon();
+        CreateOrUpdateOverlay();
     }
 }
 
@@ -1208,10 +1272,16 @@ static bool ApplySettings(HWND hwnd) {
         return false;
     }
 
+    // Totals and the adapter choice change outside the settings panel (timer,
+    // Status combo) after tempSettings was copied; keep their live values.
     state.tempSettings.lifetimeDownloaded = g_settings.lifetimeDownloaded;
     state.tempSettings.lifetimeUploaded = g_settings.lifetimeUploaded;
     wcscpy_s(state.tempSettings.lifetimeSince, _countof(state.tempSettings.lifetimeSince),
              g_settings.lifetimeSince);
+    state.tempSettings.adapterAuto = g_settings.adapterAuto;
+    state.tempSettings.adapterLuid = g_settings.adapterLuid;
+    wcscpy_s(state.tempSettings.adapterAlias, _countof(state.tempSettings.adapterAlias),
+             g_settings.adapterAlias);
     g_settings = state.tempSettings;
     const bool saved = PersistSettingsNow();
     UpdateSpeedValues(g_currentDownBps, g_currentUpBps);
@@ -1319,7 +1389,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                   0, 0, 0, 0,
                                   hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_COMBO_IF)), g_hInst, nullptr);
 
-        PopulateAdapters(true);
+        InitializeAdapterSelection();
 
         g_hwndDownTitle = mkLabel(L"Download Speed:", ID_DOWN_TITLE, SS_LEFT);
         g_hwndSpeedDown = mkLabel(g_szDownSpeed, ID_SPEED_DOWN, SS_RIGHT);

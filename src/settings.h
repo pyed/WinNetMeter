@@ -46,6 +46,9 @@ struct AppSettings {
     ULONGLONG lifetimeDownloaded = 0;
     ULONGLONG lifetimeUploaded = 0;
     wchar_t lifetimeSince[11] = L""; // YYYY-MM-DD
+    int adapterAuto = 1;               // 1 = meter whichever adapter carries the default route
+    ULONGLONG adapterLuid = 0;         // manual choice (NET_LUID value) when adapterAuto == 0
+    wchar_t adapterAlias[128] = L"";   // manual choice's name, to recover it if its LUID changes
 };
 
 inline bool HasUiEntryPoint(const AppSettings& s) {

@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.1.6** (tag `v0.1.6`). `main` is at the 0.1.6 code plus CI changes.
 - In progress: the **0.2.0** work below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M3** (application manifest).
+- Last completed milestone: **M4** (automatic adapter selection).
 
 ## 0.2.0 milestone plan
 
@@ -22,7 +22,7 @@ refactor lands with no behavior change before features are built on it.
       stacking save-failure dialog.
 - [x] **M3** Application manifest (Common Controls v6, PerMonitorV2, supportedOS, asInvoker);
       drop the runtime DPI call; `Metadata` check asserts the manifest.
-- [ ] **M4** Adapter selection: "Automatic" mode that follows the default route (new default),
+- [x] **M4** Adapter selection: "Automatic" mode that follows the default route (new default),
       remembered manual choice, re-evaluated while running.
 - [ ] **M5** Formatting: bits-per-second option; locale-aware "since" date.
 - [ ] **M6** Theme-aware default meter colours, with a settings-version migration.
@@ -179,3 +179,26 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   asserts the overlay window is PerMonitorV2. Negative control: the manifest assertion
   reports "absent" on a pre-manifest build.
 - Verified: build clean; 40 unit tests; 16/16 integration checks; isolation guard clean.
+
+### M4: automatic adapter selection (2026-10-08)
+- New in `network.cpp`: `GetDefaultRouteLuid` (`GetBestInterfaceEx` to 1.1.1.1, then
+  2606:4700:4700::1111; addresses are written byte-wise so there is no ws2_32 import) and the
+  pure `ChooseAdapter`. Mobile broadband types 243/244 are now listed.
+- Settings: `[Network] Adapter=auto | <16 hex LUID>`, `AdapterName=<hex-encoded alias>`
+  (`AppSettings::adapterAuto/adapterLuid/adapterAlias`). Missing or invalid -> Automatic, so
+  every 0.1.x user starts in Automatic (on the dev machine that resolves to Ethernet, the
+  adapter 0.1.6 happened to pick).
+- `main.cpp`: combo item 0 is "Automatic (<default-route alias>)", adapters follow (the combo
+  maps item i+1 to `g_comboLuids[i]`). Automatic re-resolves every tick and switches with
+  `Rebind` (session totals kept); a user pick switches with `Reset` and is saved at once.
+  Manual mode recovers a vanished adapter by LUID, then unique name, every 3 s, and never
+  substitutes another adapter. The combo is no longer rebuilt every 3 s while disconnected.
+  `ApplySettings` now preserves the adapter fields (it previously would have reverted a combo
+  change made while the window was open, the same way it already protected the totals).
+- Tests: `TestChooseAdapter` (includes the dev-machine adapter order that exposed the bug),
+  `TestAdapterSettings` (round trip, legacy file, garbage values), `TestDefaultRouteLookup`
+  (live); `TestAdapterRebindAndNoFallback` now calls `ChooseAdapter` instead of re-implementing
+  it. Integration `AdapterSelection`: Automatic selected and labelled with the default-route
+  adapter (compared against `GetBestInterface` + .NET; exercised here: "Ethernet"), manual
+  choice saved and restored across a restart, switching back saves `auto`.
+- Verified: build clean; 44 unit tests; 17/17 integration checks; isolation guard clean.

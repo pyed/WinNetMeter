@@ -100,6 +100,20 @@ static bool DecodePrefix(const wchar_t* encoded, wchar_t* out, size_t capacity) 
     return true;
 }
 
+// Strict 1-16 digit hexadecimal, as written for adapter LUIDs.
+static bool ParseHex64(const wchar_t* text, ULONGLONG* value) {
+    if (!text || !value || !text[0]) return false;
+    ULONGLONG parsed = 0;
+    size_t digits = 0;
+    for (const wchar_t* p = text; *p; ++p, ++digits) {
+        int digit = HexDigit(*p);
+        if (digit < 0 || digits >= 16) return false;
+        parsed = (parsed << 4) | static_cast<ULONGLONG>(digit);
+    }
+    *value = parsed;
+    return true;
+}
+
 static std::wstring EncodePrefix(const wchar_t* prefix) {
     std::wstring encoded = L"x";
     wchar_t codeUnit[5] = {};
@@ -198,6 +212,20 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     if (ParseIsoDate(num, nullptr)) {
         wcscpy_s(s->lifetimeSince, _countof(s->lifetimeSince), num);
     }
+
+    // Absent in files written before 0.2.0: those users get Automatic.
+    GetPrivateProfileStringW(L"Network", L"Adapter", L"auto", num, _countof(num), filePath);
+    ULONGLONG adapterLuid = 0;
+    if (_wcsicmp(num, L"auto") != 0 && ParseHex64(num, &adapterLuid) && adapterLuid != 0) {
+        s->adapterAuto = 0;
+        s->adapterLuid = adapterLuid;
+        wchar_t encodedAlias[_countof(s->adapterAlias) * 4 + 2] = {};
+        wchar_t alias[_countof(s->adapterAlias)] = {};
+        GetPrivateProfileStringW(L"Network", L"AdapterName", L"", encodedAlias, _countof(encodedAlias), filePath);
+        if (encodedAlias[0] && DecodePrefix(encodedAlias, alias, _countof(alias))) {
+            wcscpy_s(s->adapterAlias, _countof(s->adapterAlias), alias);
+        }
+    }
 }
 
 // Renders the whole settings file in memory. Written as UTF-16LE with a BOM so
@@ -247,6 +275,16 @@ static std::wstring BuildSettingsIni(const AppSettings* s) {
     swprintf_s(num, L"%lu", static_cast<DWORD>(s->up));
     out += L"\r\nUploadColor=";
     out += num;
+
+    out += L"\r\n\r\n[Network]\r\nAdapter=";
+    if (s->adapterAuto || s->adapterLuid == 0) {
+        out += L"auto";
+    } else {
+        swprintf_s(num, L"%016llX", static_cast<unsigned long long>(s->adapterLuid));
+        out += num;
+        out += L"\r\nAdapterName=";
+        out += EncodePrefix(s->adapterAlias);
+    }
 
     out += L"\r\n\r\n[Totals]\r\n";
     swprintf_s(num, L"%llu", static_cast<unsigned long long>(s->lifetimeDownloaded));

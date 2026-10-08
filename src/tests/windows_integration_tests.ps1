@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('SingleInstance', 'DuplicateUi', 'WindowStyles', 'Position', 'Dpi',
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
-                 'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog')]
+                 'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
+                 'AdapterSelection')]
     [string]$Check
 )
 
@@ -123,6 +124,8 @@ public static class WinNetMeterNative
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
     [DllImport("shell32.dll")]
     private static extern UIntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
+    [DllImport("iphlpapi.dll")]
+    public static extern uint GetBestInterface(uint destination, out uint index);
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
     [DllImport("user32.dll")]
@@ -285,10 +288,12 @@ function Wait-AppWindows([System.Diagnostics.Process]$Process) {
     throw 'Timed out waiting for WinNetMeter host and overlay windows'
 }
 
-function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n") {
+function Start-TestApp([string]$SettingsContent = "[Overlay]`r`nShowWidget=1`r`n", [switch]$KeepSettings) {
     Assert-True (@(Get-RunningAppProcesses).Count -eq 0) 'A WinNetMeter process from this build is already running'
-    [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
-    [IO.File]::WriteAllText($settingsPath, $SettingsContent)
+    if (-not $KeepSettings) {
+        [IO.Directory]::CreateDirectory($settingsDirectory) | Out-Null
+        [IO.File]::WriteAllText($settingsPath, $SettingsContent)
+    }
 
     $process = $null
     try {
@@ -312,6 +317,40 @@ function Stop-TestApp($Session) {
         Stop-Process -Id $Session.Process.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $Session.Process.Id -Timeout 5 -ErrorAction SilentlyContinue
     }
+}
+
+function Get-IniString([string]$Section, [string]$Key) {
+    $buffer = New-Object Text.StringBuilder 1024
+    [void][WinNetMeterNative]::GetPrivateProfileStringW($Section, $Key, '', $buffer, $buffer.Capacity, $settingsPath)
+    $buffer.ToString()
+}
+
+# Reverses the app's text encoding for INI values: 'x' + four hex digits per UTF-16 unit.
+function ConvertFrom-HexText([string]$Encoded) {
+    if (-not $Encoded.StartsWith('x') -or (($Encoded.Length - 1) % 4) -ne 0) { return $null }
+    -join @(for ($i = 1; $i -lt $Encoded.Length; $i += 4) { [char][Convert]::ToInt32($Encoded.Substring($i, 4), 16) })
+}
+
+function Get-ComboText([IntPtr]$Combo, [int]$Index) {
+    $length = [int][WinNetMeterNative]::SendMessageW($Combo, 0x0149, [IntPtr]$Index, [IntPtr]::Zero)
+    $text = New-Object Text.StringBuilder ([Math]::Max($length + 1, 16))
+    [void][WinNetMeterNative]::SendMessageTextW($Combo, 0x0148, [IntPtr]$Index, $text)
+    $text.ToString()
+}
+
+function Select-ComboItem([IntPtr]$Main, [IntPtr]$Combo, [int]$Id, [int]$Index) {
+    [void][WinNetMeterNative]::SendMessageW($Combo, 0x014E, [IntPtr]$Index, [IntPtr]::Zero)
+    [void][WinNetMeterNative]::SendMessageW($Main, 0x0111, [IntPtr]($Id -bor (1 -shl 16)), $Combo)
+}
+
+# The adapter Windows routes 1.1.1.1 through, by friendly name (what the app shows).
+function Get-DefaultRouteAlias {
+    $index = [uint32]0
+    if ([WinNetMeterNative]::GetBestInterface(0x01010101, [ref]$index) -ne 0) { return $null }
+    foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        try { if ($nic.GetIPProperties().GetIPv4Properties().Index -eq $index) { return $nic.Name } } catch { }
+    }
+    $null
 }
 
 function Remove-TestSettings {
@@ -839,6 +878,41 @@ try {
             } finally {
                 Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
             }
+        }
+        'AdapterSelection' {
+            $main = Get-AppWindow $session $mainClass
+            $combo = [WinNetMeterNative]::GetDlgItem($main.Handle, 101)
+            Assert-True ($combo -ne [IntPtr]::Zero) 'Adapter list was not found'
+            $count = [int][WinNetMeterNative]::SendMessageW($combo, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True ($count -ge 2) "Expected Automatic plus at least one adapter, found $count entries"
+
+            # Fresh settings: Automatic, labelled with the adapter that carries the default route.
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($combo, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero) -eq 0) 'Automatic is not selected by default'
+            $automatic = Get-ComboText $combo 0
+            $expected = Get-DefaultRouteAlias
+            if ($expected) {
+                Assert-True ($automatic -eq "Automatic ($expected)") "Automatic shows '$automatic'; the default route uses '$expected'"
+            } else {
+                Assert-True ($automatic -like 'Automatic*') "First entry is not Automatic: '$automatic'"
+            }
+
+            # A manual choice is saved at once (LUID + name) and survives a restart.
+            $choice = $count - 1
+            $choiceName = Get-ComboText $combo $choice
+            Select-ComboItem $main.Handle $combo 101 $choice
+            Assert-True ((Get-IniString 'Network' 'Adapter') -match '^[0-9A-F]{16}$') "Manual adapter LUID not saved: '$(Get-IniString 'Network' 'Adapter')'"
+            Assert-True ((ConvertFrom-HexText (Get-IniString 'Network' 'AdapterName')) -eq $choiceName) 'Manual adapter name not saved'
+
+            Stop-TestApp $session
+            $session = Start-TestApp -KeepSettings
+            $main = Get-AppWindow $session $mainClass
+            $combo = [WinNetMeterNative]::GetDlgItem($main.Handle, 101)
+            $selected = [int][WinNetMeterNative]::SendMessageW($combo, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero)
+            Assert-True ($selected -ge 1 -and (Get-ComboText $combo $selected) -eq $choiceName) "Restart did not restore '$choiceName' (selected index $selected)"
+
+            Select-ComboItem $main.Handle $combo 101 0
+            Assert-True ((Get-IniString 'Network' 'Adapter') -eq 'auto') 'Switching back to Automatic was not saved'
+            'ADAPTER_SELECTION_OK'
         }
     }
 } finally {

@@ -532,37 +532,105 @@ void TestAdapterRebindAndNoFallback() {
     wcscpy_s(mockList[1].name, L"Wi-Fi");
     mockList[1].status = IfOperStatusUp;
 
-    // Suppose previous selection was "VPN" with LUID 0xCCC
-    wchar_t selectedAlias[128] = L"VPN";
+    // Suppose previous selection was "VPN" with LUID 0xCCC. It disappeared, so the
+    // real selection logic must NOT fall back to "Ethernet" (index 0).
+    NET_LUID none = {};
     NET_LUID selectedLuid;
     selectedLuid.Value = 0xCCC;
-
-    int exactMatch = -1;
-    int aliasMatch = -1;
-    int aliasMatchCount = 0;
-
-    for (int i = 0; i < 2; ++i) {
-        if (mockList[i].luid.Value == selectedLuid.Value) exactMatch = i;
-        if (wcscmp(mockList[i].name, selectedAlias) == 0) {
-            aliasMatch = i;
-            ++aliasMatchCount;
-        }
-    }
-
-    // Since "VPN" disappeared and has no match in list, it must NOT select "Ethernet" (index 0)
-    assert(exactMatch == -1);
-    assert(aliasMatchCount == 0);
-    int finalChosen = -1;
-    if (exactMatch >= 0) {
-        finalChosen = exactMatch;
-    } else if (aliasMatchCount == 1) {
-        finalChosen = aliasMatch;
-    } else {
-        finalChosen = -1; // Disconnected! Never fall back to 0!
-    }
-    assert(finalChosen == -1);
+    assert(ChooseAdapter(mockList, 2, false, none, selectedLuid, L"VPN") == -1);
 
     printf("PASS: TestAdapterRebindAndNoFallback\n");
+}
+
+static AdapterInfo MockAdapter(ULONGLONG luid, const wchar_t* name, IF_OPER_STATUS status, DWORD type) {
+    AdapterInfo a = {};
+    a.luid.Value = luid;
+    wcscpy_s(a.name, name);
+    a.status = status;
+    a.type = type;
+    return a;
+}
+
+void TestChooseAdapter() {
+    NET_LUID none = {};
+    // Mirrors the dev machine that exposed the bug: zero-traffic virtual adapters
+    // that are Up sort ahead of Wi-Fi. 0.1.x metered the first Up adapter.
+    AdapterInfo list[] = {
+        MockAdapter(0x10, L"Ethernet (Kernel Debugger)", IfOperStatusDown, ADAPTER_TYPE_ETHERNET),
+        MockAdapter(0x20, L"Local Area Connection* 6", IfOperStatusUp, ADAPTER_TYPE_ETHERNET),
+        MockAdapter(0x30, L"vEthernet (WSL)", IfOperStatusUp, ADAPTER_TYPE_ETHERNET),
+        MockAdapter(0x40, L"Wi-Fi", IfOperStatusUp, ADAPTER_TYPE_WIFI),
+        MockAdapter(0x50, L"VPN", IfOperStatusUp, ADAPTER_TYPE_VIRTUAL),
+        MockAdapter(0x60, L"VPN", IfOperStatusUp, ADAPTER_TYPE_VIRTUAL),
+    };
+    const int count = _countof(list);
+    NET_LUID wifi; wifi.Value = 0x40;
+    NET_LUID unlisted; unlisted.Value = 0x99;
+
+    // Automatic follows the default route, wherever it sorts.
+    assert(ChooseAdapter(list, count, true, wifi, none, nullptr) == 3);
+    assert(ChooseAdapter(list, count, true, unlisted, none, nullptr) == -1);
+    assert(ChooseAdapter(list, count, true, none, none, nullptr) == -1);
+    printf("PASS: TestChooseAdapter (automatic)\n");
+
+    // Manual: exact LUID wins; a renamed LUID is recovered by a unique alias;
+    // an ambiguous alias or a vanished adapter selects nothing.
+    NET_LUID saved; saved.Value = 0x30;
+    assert(ChooseAdapter(list, count, false, wifi, saved, L"vEthernet (WSL)") == 2);
+    saved.Value = 0x777;
+    assert(ChooseAdapter(list, count, false, wifi, saved, L"Wi-Fi") == 3);
+    assert(ChooseAdapter(list, count, false, wifi, saved, L"VPN") == -1);
+    assert(ChooseAdapter(list, count, false, wifi, saved, L"Gone") == -1);
+    assert(ChooseAdapter(list, count, false, wifi, none, L"") == -1);
+    assert(ChooseAdapter(nullptr, 0, true, wifi, none, nullptr) == -1);
+    printf("PASS: TestChooseAdapter (manual)\n");
+}
+
+void TestAdapterSettings() {
+    const wchar_t* path = L".\\test_adapter_settings.ini";
+    DeleteFileW(path);
+
+    AppSettings defaults;
+    assert(defaults.adapterAuto == 1);
+
+    AppSettings manual;
+    manual.adapterAuto = 0;
+    manual.adapterLuid = 0x0006008002000000ULL;
+    wcscpy_s(manual.adapterAlias, L"Ethernet é 下");
+    assert(SaveSettingsCustom(&manual, path));
+    AppSettings loaded;
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.adapterAuto == 0);
+    assert(loaded.adapterLuid == manual.adapterLuid);
+    assert(wcscmp(loaded.adapterAlias, manual.adapterAlias) == 0);
+
+    AppSettings automatic;
+    assert(SaveSettingsCustom(&automatic, path));
+    LoadSettingsCustom(&loaded, path);
+    assert(loaded.adapterAuto == 1);
+
+    // Files from 0.1.x have no [Network] section; garbage values fall back to Automatic.
+    for (const wchar_t* value : { static_cast<const wchar_t*>(nullptr), L"not-hex", L"0", L"12345678901234567" }) {
+        assert(SaveSettingsCustom(&automatic, path));
+        WritePrivateProfileStringW(L"Network", L"Adapter", value, path);
+        LoadSettingsCustom(&loaded, path);
+        assert(loaded.adapterAuto == 1);
+    }
+    DeleteFileW(path);
+    printf("PASS: TestAdapterSettings\n");
+}
+
+void TestDefaultRouteLookup() {
+    NET_LUID route = {};
+    if (!GetDefaultRouteLuid(&route)) {
+        printf("INFO: no default route on this machine; lookup returned false\n");
+    } else {
+        assert(route.Value != 0);
+        wchar_t alias[NDIS_IF_MAX_STRING_SIZE + 1] = {};
+        assert(ConvertInterfaceLuidToAlias(&route, alias, _countof(alias)) == NO_ERROR);
+        printf("INFO: default route adapter is \"%ls\"\n", alias);
+    }
+    printf("PASS: TestDefaultRouteLookup\n");
 }
 
 static void AssertInside(const RECT& inner, const RECT& outer) {
@@ -919,6 +987,9 @@ int main() {
     TestLiveAdapters();
     TestGdiResourceLeakCheck();
     TestAdapterRebindAndNoFallback();
+    TestChooseAdapter();
+    TestAdapterSettings();
+    TestDefaultRouteLookup();
     TestTaskbarPlacement();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();

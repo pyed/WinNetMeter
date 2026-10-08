@@ -13,7 +13,9 @@ enum {
     ADAPTER_TYPE_GIGABIT = 117,     // IF_TYPE_GIGABITETHERNET (NDIS 117)
     ADAPTER_TYPE_PPP = 23,          // IF_TYPE_PPP
     ADAPTER_TYPE_VIRTUAL = 53,      // IF_TYPE_PROP_VIRTUAL (WireGuard / VPN)
-    ADAPTER_TYPE_TUNNEL = 131       // IF_TYPE_TUNNEL
+    ADAPTER_TYPE_TUNNEL = 131,      // IF_TYPE_TUNNEL
+    ADAPTER_TYPE_WWANPP = 243,      // IF_TYPE_WWANPP (mobile broadband, GSM)
+    ADAPTER_TYPE_WWANPP2 = 244      // IF_TYPE_WWANPP2 (mobile broadband, CDMA)
 };
 
 struct AdapterInfo {
@@ -79,3 +81,14 @@ struct NetSampler {
 
 // Enumerates physical and VPN/virtual interfaces
 int GetAdapters(AdapterInfo* out, int maxCount);
+
+// The interface Windows would use to reach the internet (default route), IPv4
+// first, then IPv6. A routing-table lookup only; nothing is sent.
+bool GetDefaultRouteLuid(NET_LUID* luid);
+
+// Picks which listed adapter to meter. Automatic mode follows defaultRoute. A
+// manual choice matches by LUID, then by alias when exactly one adapter has it
+// (a VPN or virtual adapter can come back with a new LUID). Never falls back to
+// an unrelated adapter. Returns the list index, or -1.
+int ChooseAdapter(const AdapterInfo* list, int count, bool automatic, NET_LUID defaultRoute,
+                  NET_LUID savedLuid, const wchar_t* savedAlias);
