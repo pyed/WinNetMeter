@@ -12,17 +12,26 @@ permissions:
 
 jobs:
   build:
-    name: Build & Test (x64 Windows)
-    runs-on: windows-latest
+    name: Build & Test (${{ matrix.arch }} Windows)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          # Built and tested natively on Arm, not cross-compiled.
+          - arch: arm64
+            runner: windows-11-arm
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Build WinNetMeter (Release x64)
+      - name: Build WinNetMeter (Release ${{ matrix.arch }})
         shell: cmd
         working-directory: src
-        run: build.bat
+        run: build.bat ${{ matrix.arch }}
 
       - name: Run Native Test Suite
         shell: cmd
@@ -32,9 +41,9 @@ jobs:
       - name: Verify PE Metadata and Dependencies
         shell: pwsh
         run: |
-          ./src/tests/windows_integration_tests.ps1 -Check Metadata
-          ./src/tests/windows_integration_tests.ps1 -Check StaticRuntime
-          ./src/tests/windows_integration_tests.ps1 -Check Imports
+          ./src/tests/windows_integration_tests.ps1 -Check Metadata -Arch ${{ matrix.arch }}
+          ./src/tests/windows_integration_tests.ps1 -Check StaticRuntime -Arch ${{ matrix.arch }}
+          ./src/tests/windows_integration_tests.ps1 -Check Imports -Arch ${{ matrix.arch }}
 
       - name: Verify Executable
         shell: pwsh
@@ -49,26 +58,34 @@ jobs:
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: WinNetMeter-windows-x64
+          name: WinNetMeter-windows-${{ matrix.arch }}
           path: src/out/WinNetMeter.exe
           if-no-files-found: error
 
   integration:
-    name: Behavioral Integration Checks (x64 Windows)
-    runs-on: windows-latest
+    name: Behavioral Integration Checks (${{ matrix.arch }} Windows)
+    runs-on: ${{ matrix.runner }}
     needs: build
     # These drive a real window, taskbar and Explorer on the runner and gate the
     # build. The list is read from the harness, so a new check runs here as soon
     # as it is added to its ValidateSet.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Build WinNetMeter (Release x64)
+      - name: Build WinNetMeter (Release ${{ matrix.arch }})
         shell: cmd
         working-directory: src
-        run: build.bat
+        run: build.bat ${{ matrix.arch }}
 
       - name: Run Behavioral Integration Checks
         shell: pwsh

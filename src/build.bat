@@ -1,39 +1,26 @@
 @echo off
 setlocal
-rem Build: WinNetMeter.exe (static CRT, Release)
+rem Build: out\WinNetMeter.exe (static CRT, Release)
+rem   build.bat          for this machine's architecture
+rem   build.bat arm64    for Windows on Arm (x64 or arm64; cross builds need
+rem                      the MSVC tools for the target installed)
 
-where cl >nul 2>&1
-if %ERRORLEVEL% equ 0 goto compile
+set "TARGET=%~1"
+if not defined TARGET (
+    set "TARGET=x64"
+    if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "TARGET=arm64"
+)
+if /i not "%TARGET%"=="x64" if /i not "%TARGET%"=="arm64" (
+    echo ERROR: unknown target "%TARGET%", use x64 or arm64
+    exit /b 1
+)
+set "HOST=x64"
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "HOST=arm64"
+set "VCARGS=%HOST%_%TARGET%"
+if /i "%HOST%"=="%TARGET%" set "VCARGS=%TARGET%"
+call "%~dp0vcenv.bat" %VCARGS% || exit /b 1
 
-if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
-    for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
-        if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" (
-            call "%%i\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-            goto compile
-        )
-    )
-)
-
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-    goto compile
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-    goto compile
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-    goto compile
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" (
-    call "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-    goto compile
-)
-
-:compile
-where cl >nul 2>&1 || (echo ERROR: MSVC x64 compiler not found & exit /b 1)
-
+cd /d "%~dp0"
 if not exist out mkdir out
 rc /nologo /fo out\app.res app.rc || exit /b 1
 cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /Fo"out\\" /Fe"out\WinNetMeter.exe" main.cpp network.cpp settings.cpp render.cpp meter.cpp out\app.res /link advapi32.lib iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib dwmapi.lib /SUBSYSTEM:WINDOWS

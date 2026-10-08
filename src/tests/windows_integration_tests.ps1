@@ -5,7 +5,11 @@ param(
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
                  'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu',
                  'AllTaskbars', 'VerticalTaskbar', 'IdleRedraws')]
-    [string]$Check
+    [string]$Check,
+    # The architecture src\out\WinNetMeter.exe was built for; the PE checks assert it.
+    # Defaults to this machine's, as build.bat does.
+    [ValidateSet('x64', 'arm64')]
+    [string]$Arch = $(if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -820,14 +824,18 @@ function Close-StartMenuTimed($Session, [int]$Minimum, [int]$TimeoutMs = 3000) {
 function Get-Dumpbin {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     Assert-True (Test-Path -LiteralPath $vswhere) 'vswhere.exe was not found'
-    $install = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $install = & $vswhere -latest -products '*' -requiresAny -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
     Assert-True ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($install)) 'MSVC installation was not found'
     $toolsRoot = Join-Path $install 'VC\Tools\MSVC'
-    $toolset = Get-ChildItem -LiteralPath $toolsRoot -Directory |
-        Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
-    $dumpbin = Join-Path $toolset.FullName 'bin\Hostx64\x64\dumpbin.exe'
-    Assert-True (Test-Path -LiteralPath $dumpbin) 'dumpbin.exe was not found'
-    $dumpbin
+    # Native tools first; an Arm machine can also run the x64 ones.
+    $hostDirs = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { @('Hostarm64\arm64', 'Hostx64\x64') } else { @('Hostx64\x64') }
+    foreach ($toolset in Get-ChildItem -LiteralPath $toolsRoot -Directory | Sort-Object { [version]$_.Name } -Descending) {
+        foreach ($hostDir in $hostDirs) {
+            $dumpbin = Join-Path $toolset.FullName "bin\$hostDir\dumpbin.exe"
+            if (Test-Path -LiteralPath $dumpbin) { return $dumpbin }
+        }
+    }
+    throw 'dumpbin.exe was not found'
 }
 
 function Get-Imports {
@@ -868,6 +876,9 @@ if ($Check -eq 'StaticRuntime') {
     $dumpbin = Get-Dumpbin
     $headers = (& $dumpbin /headers $exePath 2>&1) -join "`n"
     Assert-True ($LASTEXITCODE -eq 0) 'dumpbin /headers failed'
+    $machine = if ($Arch -eq 'arm64') { 'AA64' } else { '8664' }
+    Assert-True ($headers -match '(?m)^\s*([0-9A-F]{3,4}) machine \(') "No machine type in the PE headers"
+    Assert-True ($Matches[1] -eq $machine) "The exe is built for machine $($Matches[1]), expected $machine ($Arch)"
     $emptyClrPattern = '(?im)^\s*0 \[\s*0\] RVA \[size\] of COM descriptor directory\s*$'
     $clrControl = "0 [       0] RVA [size] of COM descriptor directory" -match $emptyClrPattern
     Assert-True $clrControl 'CLR-header negative control is invalid'
