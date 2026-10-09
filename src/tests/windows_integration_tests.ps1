@@ -364,25 +364,27 @@ public static class WinNetMeterNative
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
     private static extern IntPtr GetProcAddress(IntPtr module, string name);
 
-    // Stands in for a second monitor's taskbar (a Shell_SecondaryTrayWnd window)
-    // on a single-monitor machine. It runs on its own thread with a message loop,
-    // as a real one does, because a meter embedded in it shares that input queue.
-    public sealed class FakeTaskbar : IDisposable
+    // A black window on its own thread with a message loop, so it paints and behaves
+    // like another program's window. Plays a second monitor's taskbar (class
+    // Shell_SecondaryTrayWnd, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, as a
+    // real one; a meter embedded in it shares its input queue) or a fullscreen app.
+    public sealed class ThreadWindow : IDisposable
     {
+        public const uint TaskbarStyle = 0x08000088;
         private readonly System.Threading.Thread thread;
         private readonly System.Threading.ManualResetEventSlim ready = new System.Threading.ManualResetEventSlim(false);
         private uint threadId;
         public IntPtr Handle { get; private set; }
 
-        public FakeTaskbar(string className, int x, int y, int width, int height)
+        public ThreadWindow(string className, uint exStyle, int x, int y, int width, int height)
         {
-            thread = new System.Threading.Thread(() => Run(className, x, y, width, height));
+            thread = new System.Threading.Thread(() => Run(className, exStyle, x, y, width, height));
             thread.IsBackground = true;
             thread.Start();
-            if (!ready.Wait(5000) || Handle == IntPtr.Zero) throw new InvalidOperationException("The stand-in taskbar was not created");
+            if (!ready.Wait(5000) || Handle == IntPtr.Zero) throw new InvalidOperationException("The test window was not created");
         }
 
-        private void Run(string className, int x, int y, int width, int height)
+        private void Run(string className, uint exStyle, int x, int y, int width, int height)
         {
             threadId = GetCurrentThreadId();
             SetThreadDpiAwarenessContext(new IntPtr(-4));
@@ -395,9 +397,8 @@ public static class WinNetMeterNative
                 lpszClassName = className
             };
             RegisterClassExW(ref windowClass);
-            // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST (as real taskbars are),
             // WS_POPUP | WS_VISIBLE
-            Handle = CreateWindowExW(0x08000088, className, null, 0x90000000, x, y, width, height,
+            Handle = CreateWindowExW(exStyle, className, null, 0x90000000, x, y, width, height,
                                      IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
             ready.Set();
             MSG message;
@@ -911,8 +912,8 @@ $testSettings = if ($Check -eq 'FormattingDisplay') {
 } elseif ($Check -eq 'SpeedUnits') {
     "[Overlay]`r`nShowWidget=1`r`nSpeedUnits=bits`r`nMinimumSpeedUnit=MB/s`r`nDecimalPlaces=1`r`n"
 } elseif ($Check -eq 'Embedded') {
-    # No Embed key, as for a new installation: embedded is the default.
-    "[Overlay]`r`nShowWidget=1`r`n"
+    # No Embed key, as for a new installation: embedded is the default. Magenta for pixel checks.
+    "[Overlay]`r`nShowWidget=1`r`nDownloadColor=16711935`r`nUploadColor=16711935`r`n"
 } elseif ($Check -eq 'AllTaskbars') {
     "[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`nAllTaskbars=1`r`n"
 } elseif ($Check -eq 'VerticalTaskbar') {
@@ -1602,6 +1603,28 @@ try {
                 Assert-True $placed "Embedded meter is not $gap px left of the $(if ($tray) { 'tray' } else { 'end of the taskbar' })"
             }
 
+            # A fullscreen app covers the taskbar and, with it, the embedded meter (it has
+            # no fullscreen logic of its own); the meter is back when the app goes.
+            $visible = Wait-MeterPixels $session $true 200
+            Assert-True ($visible -ge 20) "Only $visible embedded meter pixels on screen"
+            $monitor = [WinNetMeterNative]::GetMonitorRect([WinNetMeterNative]::TaskbarWindow())
+            $width = $monitor.Right - $monitor.Left
+            $height = $monitor.Bottom - $monitor.Top
+            $app = New-Object WinNetMeterNative+ThreadWindow('WinNetMeterFullscreenProbe', [uint32]0, $monitor.Left, $monitor.Top, $width, $height)
+            try {
+                [void][WinNetMeterNative]::SetForegroundWindow($app.Handle)
+                $deadline = [Environment]::TickCount + 3000
+                do {
+                    Start-Sleep -Milliseconds 100
+                    $covered = (Measure-MeterPixels $session $true) -eq 0
+                } while (-not $covered -and [Environment]::TickCount -lt $deadline)
+                Assert-True $covered "A fullscreen app did not cover the embedded meter ($(Measure-MeterPixels $session $true) pixels visible)"
+            } finally {
+                $app.Dispose()
+            }
+            $back = Wait-MeterPixels $session $true ([int]($visible / 2))
+            Assert-True ($back -ge $visible / 2) "The embedded meter did not come back after the fullscreen app closed: $back of $visible pixels"
+
             # Double-click still opens the app; Explorer's TaskbarCreated does not duplicate it.
             [void][WinNetMeterNative]::SendMessageW($meter.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)
             Assert-True (Wait-WindowVisible $session $mainClass) 'Embedded meter double-click did not open the window'
@@ -1677,8 +1700,9 @@ try {
             $primaryWindow = [WinNetMeterNative]::TaskbarWindow()
             $monitor = [WinNetMeterNative]::GetMonitorRect($primaryWindow)
             $thickness = [Math]::Min($taskbar.Bottom - $taskbar.Top, $taskbar.Right - $taskbar.Left)
-            $fake = New-Object WinNetMeterNative+FakeTaskbar('Shell_SecondaryTrayWnd', $monitor.Left, $monitor.Top,
-                                                            ($monitor.Right - $monitor.Left), $thickness)
+            $width = $monitor.Right - $monitor.Left
+            $fake = New-Object WinNetMeterNative+ThreadWindow('Shell_SecondaryTrayWnd', [WinNetMeterNative+ThreadWindow]::TaskbarStyle,
+                                                             $monitor.Left, $monitor.Top, $width, $thickness)
             try {
                 $fakeRect = New-Object WinNetMeterNative+RECT
                 [void][WinNetMeterNative]::GetWindowRect($fake.Handle, [ref]$fakeRect)
@@ -1741,7 +1765,8 @@ try {
             $x = if (-not $horizontal -and $taskbar.Left -le $monitor.Left) { $monitor.Right - $thickness } else { $monitor.Left }
             $y = if ($horizontal -and $taskbar.Top -le $monitor.Top) { $monitor.Top + $thickness } else { $monitor.Top }
             $length = ($monitor.Bottom - $monitor.Top) - $(if ($horizontal) { $thickness } else { 0 })
-            $fake = New-Object WinNetMeterNative+FakeTaskbar('Shell_SecondaryTrayWnd', $x, $y, $thickness, $length)
+            $fake = New-Object WinNetMeterNative+ThreadWindow('Shell_SecondaryTrayWnd', [WinNetMeterNative+ThreadWindow]::TaskbarStyle,
+                                                             $x, $y, $thickness, $length)
             try {
                 $fakeRect = New-Object WinNetMeterNative+RECT
                 [void][WinNetMeterNative]::GetWindowRect($fake.Handle, [ref]$fakeRect)
