@@ -956,7 +956,15 @@ try {
             Assert-True ($second.WaitForExit(3000)) 'Second instance did not exit within three seconds'
             $after = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id))
             Assert-True ($second.ExitCode -eq 0) 'Duplicate launch failed instead of handing off'
-            Assert-True ($before.Count -eq $after.Count) 'Duplicate launch changed the top-level window count'
+            # WinNetMeter's own windows must not change. Windows also creates helper windows
+            # for a thread when it likes (IME ones, for instance; seen on the Arm runner), so
+            # the others are only reported.
+            $ours = { param($windows) (@($windows | Where-Object { $_.ClassName -like 'WinNetMeter*' }).ClassName | Sort-Object) -join ', ' }
+            Assert-True ((& $ours $before) -eq (& $ours $after)) "Duplicate launch changed WinNetMeter's windows: [$(& $ours $before)] -> [$(& $ours $after)]"
+            if ($before.Count -ne $after.Count) {
+                $all = { param($windows) (@($windows).ClassName | Sort-Object) -join ', ' }
+                "  other windows changed: [$(& $all $before)] -> [$(& $all $after)]"
+            }
             Assert-True (@($after | Where-Object ClassName -eq $mainClass).Count -eq 1) 'Duplicate main host detected'
             Assert-True (@($after | Where-Object ClassName -eq 'WinNetMeterOverlay').Count -eq 1) 'Duplicate overlay detected'
             'DUPLICATE_UI_GUARD_OK'

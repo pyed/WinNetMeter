@@ -562,6 +562,11 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   runner's screen, taskbar, tray parts, foreground and topmost windows.
 - `.gitattributes`: batch files are checked out with CRLF (cmd.exe can miss labels in LF
   files, and `vcenv.bat` jumps to one).
+- Contract change, deliberate: `DuplicateUi` compared the instance's total top-level window
+  count before and after a second launch, and failed once on the Arm runner (passing twice
+  before): Windows creates helper windows for a thread when it likes (IME ones, for
+  instance). It now requires WinNetMeter's own windows (classes `WinNetMeter*`) to be
+  unchanged and prints any other change.
 - Gotchas: PowerShell's `$pid` is read-only (an automatic variable); hex literals above
   0x7FFFFFFF are negative Int32s (`0x90000004`); a window on a thread that does not pump
   messages is never painted, so it proves nothing in pixel checks.
