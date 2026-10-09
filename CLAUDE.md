@@ -26,26 +26,33 @@ from `handoff.md` alone, without this conversation.
 | `src/app.rc`, `src/version.h` | Resources, manifest, version (single source of truth) |
 | `src/tests/unit_tests.cpp` | Native unit tests: plain `assert`, one `PASS:` line per test |
 | `src/tests/windows_integration_tests.ps1` | Behavioral checks against the built exe |
-| `.github/workflows/` | `ci.yml` (build, unit tests, all integration checks), `release.yml` (tag -> release) |
+| `src/build.bat`, `src/vcenv.bat` | Build for x64 or arm64; `vcenv.bat` sets up MSVC for a target (shared with the tests) |
+| `.github/workflows/` | `ci.yml` (build, unit tests, all integration checks; x64 and ARM64), `release.yml` (tag -> release) |
 
 ## Build and test
 
-Run from a shell where MSVC can be found (the scripts locate VS through vswhere):
+Run from any shell; the scripts locate Visual Studio through vswhere:
 
 ```
-cd src && .\build.bat                          # -> src\out\WinNetMeter.exe
-cd src\tests && .\run_tests.bat                # builds and runs unit_tests.exe
-pwsh src\tests\windows_integration_tests.ps1 -Check <Name>
+cd src && .\build.bat                          # -> src\out\WinNetMeter.exe, this machine's architecture
+cd src && .\build.bat arm64                    # cross-compile (needs the MSVC ARM64 build tools)
+cd src\tests && .\run_tests.bat                # builds and runs unit_tests.exe natively
+pwsh src\tests\windows_integration_tests.ps1 -Check <Name> [-Arch x64|arm64]
 ```
 
 - Always call scripts and exes with an explicit `.\`. The dev machine sets
   `NoDefaultCurrentDirectoryInExePath=1`, so bare names fail with "is not recognized".
 - `'vswhere.exe' is not recognized` during a build comes from Microsoft's `vcvarsall.bat`
   under that setting. It is harmless.
-- Builds use `/W4 /WX`: every warning is an error. Local builds use VS 2022 Build Tools; CI's
-  `windows-latest` uses VS 2026. Code must compile cleanly on both.
+- Builds use `/W4 /WX`: every warning is an error. Local builds use VS 2022 Build Tools (x64
+  only: no ARM64 tools on the dev machine); CI's `windows-latest` uses VS 2026 and
+  `windows-11-arm` builds ARM64 natively. Code must compile cleanly on all of them.
+- `-Arch` only matters to the PE checks (they assert the machine type); behavioral checks run
+  the build for the machine they are on.
+- Batch files are checked out with CRLF (`.gitattributes`): cmd.exe can miss labels in
+  LF-only batch files.
 - The list of integration check names is the `ValidateSet` at the top of
-  `windows_integration_tests.ps1`; CI runs every one of them.
+  `windows_integration_tests.ps1`; CI runs every one of them on both architectures.
 
 ## Integration tests: rules
 

@@ -6,7 +6,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 - Released: **v0.2.0** (tag `v0.2.0`, 2026-10-09), the plan below, driven by the second audit
   (2026-10-08). Deployed on the dev machine.
-- Last completed milestone: **M14** (vertical taskbars, upload-first order; on `main`, not released).
+- Last completed milestone: **M15** (0.3.0: embedded by default, redraw skipping, ARM64).
   See "Open items" for what next.
 
 ## Open items
@@ -15,12 +15,15 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   to the left or right (a user setting, not changed from tests).
 - Real multi-monitor hardware: meters on secondary taskbars are only tested against a
   stand-in window (M11), including the Windows 10 class names and the per-monitor DPI path.
-- Windows 10: nothing in 0.2.0 was run on Windows 10 (embedded mode, the secondary-taskbar
-  classes, `ABN_FULLSCREENAPP`). The manifest and imports still allow 1607+.
+- Windows 10 is not a testing target (owner's decision, 2026-10-09): nothing since 0.2.0 has
+  run on it. The manifest and imports still allow 1607+.
+- ARM64 is built and tested on GitHub's `windows-11-arm` runner only; there is no Arm
+  hardware here. That image starts with a fullscreen account prompt and Search open:
+  `prepare_ci_desktop.ps1` closes them. If Arm checks fail, read the "Prepare and Describe
+  the Runner's Desktop" step first.
 - A real Explorer restart with embedded mode on (only `TaskbarCreated` is tested).
-- Embedded mode is opt-in; consider making it the default after field feedback.
-- `StartMenu` recovery budget: 450 ms; CI measured 78-202 ms, locally 5-125 ms. Watch for
-  flakes before tightening or loosening it.
+- `StartMenu` recovery budget: 450 ms; measured 78-202 ms (CI x64), 24-47 ms (CI ARM64),
+  5-125 ms (dev machine). Watch for flakes before tightening or loosening it.
 - `ABN_POSCHANGED`/`ABN_STATECHANGE` now reach the meter thread and are ignored; they could
   trigger an immediate re-layout instead of waiting for the 1 s refresh.
 
@@ -118,6 +121,15 @@ DWM-composed screen pixels.
   A **`WS_EX_LAYERED` child of `Shell_TrayWnd` is visible** with Start closed, open, 50/300/
   1000 ms after closing, and with the taskbar focused. Layered child windows require a
   manifest that declares Windows 8+.
+- While the taskbar is in band 6 (Start or Search open), creating a child window under
+  `Shell_TrayWnd` fails with `ERROR_ACCESS_DENIED`, whatever the class. The meter then shows
+  the overlay and retries every second; measured: embedded within 2 s of Start closing. An
+  embedded meter does not keep the taskbar in band 6 (Start cycles with one attached return
+  it to band 1).
+- Observed once (2026-10-09, dev machine): the taskbar stayed in band 6 for several minutes
+  with Start closed and Explorer not restarted; it cleared by itself and could not be
+  reproduced. Not caused by an embedded meter (experiment: band back to 1 with and without
+  one). While it lasts, overlays are covered and new embedding is refused.
 - Cross-process parent/child windows attach the two threads' input queues: if the thread that
   owns the child blocks, taskbar input can stall. Only the meter thread may own such windows,
   and it must never block (no disk I/O, no modal UI, no `SendMessage` to other processes it
@@ -507,3 +519,53 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
 - Gotcha: in `New-Object Type(a, b - c)` PowerShell binds the comma before the minus; compute
   arguments into variables first.
 - Verified: build clean; 63 unit tests; 24/24 integration checks; isolation guard clean.
+
+### M15: 0.3.0 (2026-10-09)
+- CI went red on `AdapterSelection` (a docs-only push): it started 0.25 s after the previous
+  check killed its instance and still saw it. `Wait-Process -Id` can return while a process
+  is still being torn down. `Stop-TestApp` now waits on the process handle, and
+  `Start-TestApp` gives stragglers up to 5 s (`Wait-NoRunningApp`).
+- **Embedded by default.** `AppSettings::embedInTaskbar` defaults to 1, also for files
+  without the key (new installs, 0.1.x). 0.2.0 wrote `Embed=0` into every file while
+  embedding was opt-in, so files with `SettingsVersion=2` get 1 whatever they say; from
+  `SettingsVersion=3` (0.3.0) an explicit 0 is respected. The overlay stays as the option
+  and the automatic fallback. Harness: checks that exercise the overlay now pin `Embed=0`;
+  `Embedded` starts from a file without the key, and also shows a real, painting fullscreen
+  window (`ThreadWindow`, which replaced `FakeTaskbar`) and asserts the embedded meter is
+  covered (0 pixels) and comes back. Measured first with a probe (`m15/fsprobe.cpp`): with a
+  fullscreen app, 5286 -> 0 -> 5286 meter pixels in both modes, taskbar 100% covered.
+- **Redraw skipping** (`PaintSlot`, `PaintedMeter` in `meter.cpp`): each meter window keeps
+  what it last drew (destination, size, DPI, font, colours, text, and for a stacked meter the
+  lines its font was fitted to) and skips the drawing when a render would draw the same.
+  `WM_METER_REFRESH` (display, setting and `TaskbarCreated` changes now request it from
+  `main.cpp`; `RequestMeterRefresh` had no callers before) forces a redraw, and nothing goes
+  more than 60 s without one. Meter windows expose a paint count in the `WinNetMeter.Paints`
+  window property (removed in `WM_NCDESTROY`). Measured with unchanged text (CPU cycles, two
+  rounds each): idle 3.0-3.1 -> 1.6 M cycles/s, dragging a window 135-140 -> 61 M cycles/s.
+  Process CPU time (15.6 ms ticks) is too coarse to show this; the idle meter text usually
+  changes every second on a busy network anyway. New check `IdleRedraws`: 0 redraws in 3.5 s
+  idle and during 30 window moves, a text change redraws, embedded too. Negative control:
+  4 and 63 redraws.
+- **ARM64.** `build.bat [x64|arm64]` (default: this machine's architecture) and
+  `run_tests.bat` set MSVC up through `vcenv.bat`, which also rejects a target whose tools
+  are missing (vcvarsall "initializes" a target even then; `cl` is asked). CI and releases
+  build, unit-test, PE-check and package both architectures natively (`windows-11-arm`),
+  and CI runs every behavioral check on both. The harness's `-Arch` makes the PE checks
+  assert the machine type (AA64 / 8664); dumpbin is found on Arm hosts too. Release assets
+  gain `WinNetMeter-<tag>-windows-arm64.zip` and `WinNetMeter-arm64.exe` (+ `.sha256`),
+  published by a final job once both architectures are built; a manual (non-tag) run of the
+  release workflow builds and packages without publishing, which is how it was rehearsed.
+- Arm runner fixes found by CI (branch `ci-arm64`, deleted after): see Open items. The
+  harness also ignored the app's rule for unusable taskbar parts: an empty `TrayNotifyWnd`
+  (Arm image) is now treated as absent, as the app does, and `Anchors`/`Embedded` assert the
+  far-end fallback instead. A "Prepare and Describe the Runner's Desktop" CI step prints the
+  runner's screen, taskbar, tray parts, foreground and topmost windows.
+- `.gitattributes`: batch files are checked out with CRLF (cmd.exe can miss labels in LF
+  files, and `vcenv.bat` jumps to one).
+- Gotchas: PowerShell's `$pid` is read-only (an automatic variable); hex literals above
+  0x7FFFFFFF are negative Int32s (`0x90000004`); a window on a thread that does not pump
+  messages is never painted, so it proves nothing in pixel checks.
+- Verified: 63 unit tests; 25 integration checks locally (x64); CI on branch `ci-arm64`
+  (before the `Embedded` fullscreen assertion was added) green on both architectures (22
+  behavioral checks each; ARM64 StartMenu: overlay 0 of 550 pixels with Start open, embedded
+  575 of 575).
