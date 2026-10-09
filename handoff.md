@@ -4,8 +4,8 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Status
 
-- Released: **v0.2.0** (tag `v0.2.0`, 2026-10-09), the plan below, driven by the second audit
-  (2026-10-08). Deployed on the dev machine.
+- Released: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64. Deployed on the dev machine.
+  0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
 - Last completed milestone: **M15** (0.3.0: embedded by default, redraw skipping, ARM64).
   See "Open items" for what next.
 
@@ -148,8 +148,9 @@ DWM-composed screen pixels.
 - A deployed WinNetMeter runs from a user folder with autostart (Run key). Its settings use
   `TaskbarOffset=-796` (meter at the far left; `Anchor=legacy` since 0.2.0), tray icon off,
   `MinimumSpeedUnit=KB/s`. New releases must keep that placement after an upgrade. It runs
-  **0.2.0** since 2026-10-09; the 0.1.6 exe and settings are kept next to the originals as
-  `*.0.1.6.bak`.
+  **0.3.0** since 2026-10-09 (embedded, left-edge position, chosen by the owner); the 0.1.6
+  and 0.2.0 exes and settings are kept next to the originals as `*.0.1.6.bak` and
+  `*.0.2.0.bak`.
 - `NoDefaultCurrentDirectoryInExePath=1` is set (see `CLAUDE.md`).
 
 ## Milestone log
@@ -574,3 +575,20 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   (before the `Embedded` fullscreen assertion was added) green on both architectures (22
   behavioral checks each; ARM64 StartMenu: overlay 0 of 550 pixels with Start open, embedded
   575 of 575).
+- CI on `main` (run 37863782459, commit 8585611) green on both architectures, 22 behavioral
+  checks each. StartMenu: overlay back 121/142/149 ms after Start closed (x64), 35/66/54 ms
+  (ARM64); embedded meter fully visible over Start on both. IdleRedraws: 0 redraws idle and
+  during window moves on both. `DuplicateUi` on Arm printed the window that used to break it:
+  `MSCTFIME UI` (text-input helper) appeared during the second launch.
+- Tagged `v0.3.0`; release run 37864055528 built and packaged both architectures, then
+  published `WinNetMeter v0.3.0`. Downloaded and checked every asset: all four `.sha256`
+  files match, `WinNetMeter.exe` is x64 (8664) and `WinNetMeter-arm64.exe` ARM64 (AA64), both
+  0.3.0; both ZIPs hold `WinNetMeter.exe`, `README.md`, `LICENSE`.
+- Upgrade rehearsal on a copy of the live settings (`m15/rehearse030.ps1`; the owner had by
+  then switched 0.2.0 to embedded and the left edge): the 0.3.0 meter embedded at exactly the
+  running 0.2.0 meter's rectangle, [12,2028,408,2148], no overlay; settings and totals kept;
+  the saved copy became `SettingsVersion=3` with `Embed=1`.
+- Deployed (`m13/deploy.ps1`, now also reporting embedded meters): release exe downloaded and
+  its SHA-256 matched (`a283fc8b...dcb8`), 0.2.0 exited through its Exit command, backups made,
+  0.3.0 started through Explorer: embedded at [12,2028,408,2148], Run value unchanged; the live
+  file migrated to `SettingsVersion=3` (`Embed=1`) on 0.3.0's first save.
