@@ -743,6 +743,14 @@ function Wait-Dialogs($Session, [int]$Count, [int]$TimeoutMs = 3000) {
     @(Get-VisibleDialogs $Session)
 }
 
+# Closes message boxes the way Escape does. An OK-only MessageBox acts on IDCANCEL;
+# a posted IDOK leaves it open (seen on CI when a check first waited for it to go).
+function Close-Dialogs($Dialogs) {
+    foreach ($dialog in @($Dialogs)) {
+        [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]2, [IntPtr]::Zero)
+    }
+}
+
 function Wait-NoDialog($Session, [int]$TimeoutMs = 3000) {
     $deadline = [Environment]::TickCount + $TimeoutMs
     while (@(Get-VisibleDialogs $Session).Count -gt 0) {
@@ -1555,11 +1563,8 @@ try {
                 Start-Sleep -Milliseconds 700
                 Assert-True ([WinNetMeterNative]::PostMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'Second open request failed'
                 Start-Sleep -Milliseconds 900
-                $dialogs = @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id) |
-                    Where-Object { $_.ClassName -eq '#32770' -and $_.Visible })
-                foreach ($dialog in $dialogs) {
-                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
-                }
+                $dialogs = @(Get-VisibleDialogs $session)
+                Close-Dialogs $dialogs
                 Assert-True ($dialogs.Count -eq 1) "Expected one save-failure dialog, found $($dialogs.Count)"
 
                 # With the window open, a live change that cannot be saved is reported at
@@ -1572,9 +1577,7 @@ try {
                 # Posted: the handler shows a modal box and would not return to a SendMessage.
                 Assert-True ([WinNetMeterNative]::PostMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)) 'Live change could not be posted'
                 $live = @(Wait-Dialogs $session 1)
-                foreach ($dialog in $live) {
-                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
-                }
+                Close-Dialogs $live
                 Assert-True ($live.Count -eq 1) "Expected the live change to be reported in one dialog while the window was open, found $($live.Count)"
                 'SAVE_FAILURE_DIALOG_OK'
             } finally {
@@ -2011,7 +2014,10 @@ try {
                 $holder.Dispose()
             }
             $main = Get-AppWindow $session $mainClass
-            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            # Defaults, so the meter is embedded (or an overlay, if embedding is refused).
+            $meters = @(@(Get-EmbeddedMeters $session.Process) +
+                        @([WinNetMeterNative]::GetWindows([uint32]$session.Process.Id) | Where-Object ClassName -eq 'WinNetMeterOverlay'))
+            Assert-True ($meters.Count -eq 1) "Expected one meter, found $($meters.Count)"
             $total = New-Object Text.StringBuilder 64
             [void][WinNetMeterNative]::GetWindowTextW([WinNetMeterNative]::GetDlgItem($main.Handle, 111), $total, $total.Capacity)
             Assert-True ($total.ToString() -eq '0 B') "Expected default totals while the file was locked, found '$total'"
@@ -2024,11 +2030,9 @@ try {
             Assert-True ([Convert]::ToBase64String($original) -eq [Convert]::ToBase64String($now)) 'The unreadable settings file was overwritten'
 
             # The user is told once, when the window opens.
-            Assert-True ([WinNetMeterNative]::PostMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'Open request failed'
+            Assert-True ([WinNetMeterNative]::PostMessageW($meters[0].Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'Open request failed'
             $dialogs = @(Wait-Dialogs $session 1)
-            foreach ($dialog in $dialogs) {
-                [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
-            }
+            Close-Dialogs $dialogs
             Assert-True ($dialogs.Count -eq 1) "Expected one dialog about the unreadable file, found $($dialogs.Count)"
             'UNREADABLE_SETTINGS_OK'
         }
@@ -2046,9 +2050,7 @@ try {
                 Assert-True ($second.ExitCode -eq 0) "Second instance exited with code $($second.ExitCode)"
                 Assert-True (Wait-WindowVisible $session $mainClass) 'A second launch did not open the window'
                 $dialogs = @(Wait-Dialogs $session 1)
-                foreach ($dialog in $dialogs) {
-                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
-                }
+                Close-Dialogs $dialogs
                 Assert-True ($dialogs.Count -eq 1) "A second launch did not report the pending save failure ($($dialogs.Count) dialogs)"
             } finally {
                 Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
