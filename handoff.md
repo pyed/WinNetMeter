@@ -8,6 +8,7 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
 - Last completed milestone: **M15** (0.3.0: embedded by default, redraw skipping, ARM64).
   See "Open items" for what next.
+- Third audit, 2026-11-14: see "Audit findings (2026-11-14)". Nothing from it is fixed yet.
 
 ## Open items
 
@@ -26,6 +27,108 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   5-125 ms (dev machine). Watch for flakes before tightening or loosening it.
 - `ABN_POSCHANGED`/`ABN_STATECHANGE` now reach the meter thread and are ignored; they could
   trigger an immediate re-layout instead of waiting for the 1 s refresh.
+
+## Audit findings (2026-11-14)
+
+Third audit, of `e513602` (0.3.0). **Done by reading, on Linux: nothing was built or run**
+(no MSVC, no Windows), so nothing here is "confirmed" in the sense used further down. The
+only experiment was `overlay.h` compiled natively against stand-in types (finding 4).
+CI run 37876796228 is green on that commit; the repository has no issues. No code changed.
+Reproduce each finding on Windows before fixing it; line numbers are for `e513602`.
+
+Correctness, most useful first:
+
+1. **Totals are not saved at shutdown, restart or sign-out.** `MainWndProc` has no
+   `WM_ENDSESSION` case. Windows ends the process without `WM_DESTROY`, so the flush at
+   `main.cpp:1289` never runs: up to 60 s of counted traffic is lost every time, plus any
+   edit still inside the 750 ms debounce. The comment at `main.cpp:657` treats this as
+   abnormal termination; for an autostarted app it is the usual exit.
+   Fix: `PersistSettingsNow()` on `WM_ENDSESSION` when `wParam` is TRUE.
+2. **A settings file that cannot be read is treated as a first run, then overwritten.**
+   `LoadSettingsCustom` (`settings.cpp:187`) returns nothing; if the file exists but cannot
+   be opened at that moment (held exclusively, transient I/O error), every key takes its
+   default, and the next automatic save (within 60 s of traffic, or at exit) replaces the
+   real file: totals, date and settings gone. Rare, but it is the one path that loses the
+   saved totals. Fix idea: distinguish "missing" from "unreadable", retry briefly, and do
+   not save automatically over a file that could not be read.
+3. **Apply always writes the Run key** (`main.cpp:991`), changed or not. Where `HKCU\...\Run`
+   cannot be written, no check box can be applied at all ("Windows startup registration
+   could not be updated"). And because `IsStartWithWindowsEnabled` (`settings.cpp:494`) is an
+   exact, case-sensitive comparison with this exe's path, a copy started from another
+   folder (or the same path typed in another case) shows the box unticked, and any Apply
+   then deletes the other copy's entry. Fix: touch the registry only when the box changed.
+4. **Anchors assume the tray is at the right or bottom end** (`overlay.h:107-125`). With a
+   right-to-left display language the taskbar is mirrored and the notification area is at
+   the left. Simulated (1920 px bar, tray at x 0-300): "next to the tray" and "left edge"
+   both put the meter at x 2-134, on top of the tray; `MirrorTrayArea` reserves the whole
+   secondary taskbar. Not checked on an RTL Windows; the embedded mapping there is also
+   untested (see M10).
+5. **The meter may only be clickable on its glyphs.** `PaintMeter` leaves the background at
+   alpha 0 (`meter.cpp:511`), and Windows hit-tests per-pixel-alpha layered windows by alpha.
+   If that holds for these windows, a double-click opens the window only when it lands on a
+   stroke of the text. Every check injects `WM_LBUTTONDBLCLK` with `SendMessage`/`PostMessage`,
+   so none would notice. Needs a real mouse to settle; an alpha-1 background makes the whole
+   box clickable but then also swallows taskbar clicks there.
+6. **A failed tray-icon add is never retried.** The results of `Shell_NotifyIconW` are
+   ignored (`main.cpp:455`, `491`); if `NIM_ADD` fails (busy shell at logon), `NIM_MODIFY`
+   fails every second until `TaskbarCreated`. With the meter off, the app then has no visible
+   entry point. Fix: on a failed `NIM_MODIFY`, try `NIM_ADD`.
+7. Smaller:
+   - The repository link reacts to every notification code (`main.cpp:1197`): a double-click
+     sends `STN_CLICKED` and `STN_DBLCLK` and opens the page twice.
+   - `PickFont` accepts any size, but loading keeps only 4-72 pt (`settings.cpp:206`): a
+     larger or smaller size works until the next start, then silently becomes 8 pt. A
+     cancelled font dialog still saves (`main.cpp:1094-1095`; `PickColor` reports Cancel).
+   - A second launch shows the window with `ShowWindowAsync` (`main.cpp:1340`), skipping
+     `RefreshSettingsControls` and the save-failure report in `ShowMainWindow`. After the
+     tray menu toggled the meter while the window was hidden, the check box is stale and the
+     next Apply turns the meter back on.
+   - A failed save from a live edit is only reported the next time the window is opened
+     (`ApplyLiveMeterSettings` ignores the result), though the user is looking at it.
+   - `FormatBytes` stops at GB (`network.cpp:72`); the deployed totals pass 1024 GB soon.
+   - README "Building from source" still lists "Windows x64" as the requirement.
+
+Hardening and release pipeline:
+
+- `build.bat:26` passes no hardening options to the linker. `IPHLPAPI.DLL` and `DWMAPI.DLL`
+  are static imports that are not KnownDLLs, so a DLL of that name beside the exe (a
+  Downloads folder) is loaded first. `/DEPENDENTLOADFLAG:0x800` restricts static imports to
+  System32 from Windows 10 1607, the stated minimum. `/guard:cf` and `/CETCOMPAT` (x64) are
+  optional extras; the `StaticRuntime` check could then assert them.
+- `release.yml` grants `contents: write` to the whole workflow (lines 9-10); only the
+  `publish` job needs it. Actions are referenced by major tag, not commit SHA, and nothing
+  updates them (no dependabot). A tag publishes whether or not CI passed on that commit
+  (`236f720`, the 0.3.0 bump, was red; the tag was put on the next, green commit by hand).
+  No job has `timeout-minutes`, and the behavioral checks can block on a modal dialog.
+- `WINNETMETER_VERSION` (numeric) and `WINNETMETER_VERSION_STRING` are bumped by hand and
+  only the string is checked (`Metadata`, the tag check). A numeric left behind ships.
+- The `.sha256` files sit next to the binaries: they detect corruption, not substitution.
+
+Efficiency (unmeasured):
+
+- The tray icon is rebuilt and sent to Explorer every second even when its text is the same
+  (`UpdateTrayIcon`, `main.cpp:441`), up to ten trial fonts per 48 px icon. M15's redraw skipping
+  covers the meter only. Skipping an unchanged icon would also thin out the overlap behind
+  the M8 GDI observation.
+- Both WinEvent hooks are installed whatever the mode (`meter.cpp:958-961`), but their
+  messages only act on overlays. In embedded mode, the default since 0.3.0, the location hook
+  still wakes the meter thread for every cursor move system-wide. This is not the redraw cost
+  rejected below; it is whether to hook at all while no overlay exists.
+
+Tests and documentation:
+
+- `prepare_ci_desktop.ps1:34-35` and `describe_desktop.ps1:79` pass `$null` as the window
+  title, the M8 gotcha (it searches for an empty title; use `[NullString]::Value`).
+- No check covers a graceful exit (every instance is killed), session end, a real mouse
+  click on the meter, or a right-to-left taskbar.
+- The README promises Windows 10; nothing has run there since 0.2.0 and the default mode
+  changed in 0.3.0 (already an open item; the README does not say so).
+
+Looked at and found sound: settings parsing (lengths bounded, values validated, legacy and
+version 2/3 migration as documented), the atomic save and its fallback order, sampler
+arithmetic, meter-thread ownership and shutdown, test isolation from the deployed instance,
+no personal data or secrets in tracked files. `src/icon.ico` is byte-identical to the
+upstream project's icon (Apache-2.0, the licence kept here); all current source is new.
 
 ## 0.2.0 milestone plan
 
