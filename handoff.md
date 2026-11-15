@@ -4,8 +4,10 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Status
 
-- Tagged: **v0.3.1** (2026-11-15), from the session branch `claude/dreamy-lovelace-nqmz4r`,
-  not from `main`: merge that branch into `main`. Not deployed on the dev machine.
+- **v0.3.1 is ready but not tagged** (2026-11-15). The session that made it could push its
+  branch `claude/dreamy-lovelace-nqmz4r` but not tags (HTTP 403 from the session's git proxy).
+  To release: tag the head of that branch (`git tag -a v0.3.1`) and push the tag; merge the
+  branch into `main` as well. Not deployed on the dev machine.
 - Previous release: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64; deployed there.
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
 - Last completed milestone: **M16** (0.3.1: audit fixes). Before it, **M15** (0.3.0: embedded
@@ -778,5 +780,6 @@ the first build and test run (results at the end of this entry).
   `SaveFailureDialog` additions each assert something the 0.3.0 code does not do. For
   `MeterClick` it depends on hit testing at alpha 0, which is documented but not observed here.
 - Not done on real hardware: an actual shutdown, an RTL Windows, a refused tray-icon add.
-- Tagged `v0.3.1`; `release.yml` now runs the full CI before building and publishing.
+- Not tagged: pushing `v0.3.1` was refused (HTTP 403) for this session; see Status.
+  `release.yml` now runs the full CI before building and publishing.
 
