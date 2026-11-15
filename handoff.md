@@ -4,9 +4,12 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Status
 
-- Released: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64. Deployed on the dev machine.
+- Tagged: **v0.3.1** (2026-11-15), from the session branch `claude/dreamy-lovelace-nqmz4r`,
+  not from `main`: merge that branch into `main`. Not deployed on the dev machine.
+- Previous release: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64; deployed there.
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
-- Last completed milestone: **M15** (0.3.0: embedded by default, redraw skipping, ARM64).
+- Last completed milestone: **M16** (0.3.1: audit fixes). Before it, **M15** (0.3.0: embedded
+  by default, redraw skipping, ARM64).
   See "Open items" for what next.
 - Third audit, 2026-11-14: see "Audit findings (2026-11-14)". All of it was addressed in
   **M16** (0.3.1), see the milestone log; what was left out, and why, is listed there.
@@ -701,8 +704,8 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
 
 ### M16: audit fixes, 0.3.1 (2026-11-15)
 Fixes for every item of "Audit findings (2026-11-14)". Written on Linux without a Windows
-toolchain: nothing here was built or run locally. CI (dispatched on the session branch) is
-the first build and test run; its results are recorded below once in.
+toolchain: nothing here was built or run locally; CI, dispatched on the session branch, was
+the first build and test run (results at the end of this entry).
 - **Session end:** `WM_ENDSESSION` (wParam TRUE) saves the settings, totals and any
   debounced edit. Check `SessionEnd`: a typed prefix is on disk when `WM_ENDSESSION` returns
   (fails without the handler: nothing saved); Exit ends the process with code 0 after saving
@@ -761,4 +764,19 @@ the first build and test run; its results are recorded below once in.
   depend on the hooks; nothing asserts their absence.
 - Harness: `[NullString]::Value` in `prepare_ci_desktop.ps1` and `describe_desktop.ps1`.
 - Version 0.3.1 (no settings format change; `SETTINGS_VERSION` stays 3).
+- Verified (CI only): run 43762058584 on `34da0a2`: builds with the hardening flags, unit
+  tests and PE checks (CFG, CET on x64, DependentLoadFlags 0x800, numeric version) green on
+  both architectures; behavioral checks failed in two places, both test bugs: a posted IDOK
+  does not close an OK-only MessageBox (the old `SaveFailureDialog` never waited for it to
+  close, so this was latent), and `UnreadableSettings` looked for an overlay although a
+  session on defaults embeds. Fixed in `f3214ef` (`Close-Dialogs` posts IDCANCEL). Run
+  43762596682 on `f3214ef`: everything green on x64 and ARM64, 26 behavioral checks each,
+  including `SessionEnd`, `UnreadableSettings`, `SecondLaunch` and `MeterClick` (real
+  double-click on the meter background opened the window, overlay and embedded).
+- **Negative controls were not run** for the new checks (that needs the old build on Windows).
+  By reasoning: `SessionEnd`, `UnreadableSettings`, `SecondLaunch`, the `Preferences` and
+  `SaveFailureDialog` additions each assert something the 0.3.0 code does not do. For
+  `MeterClick` it depends on hit testing at alpha 0, which is documented but not observed here.
+- Not done on real hardware: an actual shutdown, an RTL Windows, a refused tray-icon add.
+- Tagged `v0.3.1`; `release.yml` now runs the full CI before building and publishing.
 
