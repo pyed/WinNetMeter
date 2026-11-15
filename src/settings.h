@@ -7,6 +7,9 @@ constexpr int TASKBAR_METER_OFFSET_MAX = 4096;
 constexpr int SPEED_DECIMAL_PLACES_MIN = 0;
 constexpr int SPEED_DECIMAL_PLACES_MAX = 2;
 constexpr size_t METER_PREFIX_CAPACITY = 32;
+// Meter font sizes, in points, that load from the file (and the font dialog offers).
+constexpr int FONT_SIZE_MIN = 4;
+constexpr int FONT_SIZE_MAX = 72;
 
 // [General] SettingsVersion: absent before 0.2.0, 2 from 0.2.0, 3 from 0.3.0.
 constexpr int SETTINGS_VERSION = 3;
@@ -75,7 +78,11 @@ inline bool HasUiEntryPoint(const AppSettings& s) {
     return s.showWidget || s.showTrayIcon;
 }
 
-void LoadSettings(AppSettings* s);
+// Returns false when the settings file exists but cannot be read (held open
+// exclusively, an I/O error): s then holds the defaults, and the file must not
+// be saved over, or its totals would be replaced by them. A missing file is a
+// first run, not a failure.
+bool LoadSettings(AppSettings* s);
 // Returns false if the settings could not be persisted (read-only file, full
 // disk, locked profile). The on-disk file is left untouched on failure.
 bool SaveSettings(const AppSettings* s);
@@ -85,6 +92,8 @@ void GetSettingsPath(wchar_t* buf, size_t maxLen);
 void SetSettingsPathOverride(const wchar_t* path);
 void SetStartupValueName(const wchar_t* name);
 bool IsStartWithWindowsEnabled();
+// Whether a Run-key command starts this exe; paths compare without case, as Windows does.
+bool IsSameStartupCommand(const wchar_t* actual, const wchar_t* expected);
 bool SetStartWithWindowsEnabled(bool enabled);
 void AddLifetimeTraffic(AppSettings* s, ULONGLONG downloaded, ULONGLONG uploaded);
 void ResetLifetimeTotals(AppSettings* s);
@@ -92,5 +101,5 @@ void ResetLifetimeTotals(AppSettings* s);
 bool FormatLifetimeSinceDate(const wchar_t* isoDate, wchar_t* out, size_t maxLen,
                              const wchar_t* locale = nullptr);
 
-void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath);
+bool LoadSettingsCustom(AppSettings* s, const wchar_t* filePath);   // see LoadSettings
 bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath);

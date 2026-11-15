@@ -4,7 +4,8 @@ param(
                  'ForegroundZOrder', 'Fullscreen', 'ExplorerRecovery', 'Metadata', 'StaticRuntime', 'Imports',
                  'ResourceLeak', 'FormattingDisplay', 'Preferences', 'CustomizationTotals', 'SaveFailureDialog',
                  'AdapterSelection', 'SpeedUnits', 'ThemeColors', 'Anchors', 'Embedded', 'StartMenu',
-                 'AllTaskbars', 'VerticalTaskbar', 'IdleRedraws')]
+                 'AllTaskbars', 'VerticalTaskbar', 'IdleRedraws', 'SessionEnd', 'UnreadableSettings',
+                 'SecondLaunch', 'MeterClick')]
     [string]$Check,
     # The architecture src\out\WinNetMeter.exe was built for; the PE checks assert it.
     # Defaults to this machine's, as build.bat does.
@@ -498,6 +499,90 @@ public static class WinNetMeterNative
         return data;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx, dy;
+        public uint mouseData, dwFlags, time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    // 64-bit processes only (x64, ARM64): the union starts at offset 8.
+    [StructLayout(LayoutKind.Explicit)]
+    private struct INPUT
+    {
+        [FieldOffset(0)] public uint type;
+        [FieldOffset(8)] public MOUSEINPUT mi;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
+
+    private static INPUT MouseAt(int x, int y, uint flags)
+    {
+        // Absolute input is normalized to 0..65535 across the primary monitor;
+        // aim at the centre of the pixel so rounding cannot leave it.
+        int width = GetSystemMetrics(0), height = GetSystemMetrics(1);
+        var input = new INPUT();
+        input.type = 0;   // INPUT_MOUSE
+        input.mi.dx = (int)(((2L * x + 1) * 65536) / (2L * width));
+        input.mi.dy = (int)(((2L * y + 1) * 65536) / (2L * height));
+        input.mi.dwFlags = flags | 0x0001 | 0x8000;   // MOVE | ABSOLUTE
+        return input;
+    }
+
+    // A real double-click at a physical point on the primary monitor, through the
+    // input stream (so hit testing decides which window gets it), then the cursor
+    // goes back. Every event carries its position, so none lands elsewhere.
+    public static uint DoubleClickAt(int x, int y)
+    {
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        POINT old;
+        GetCursorPos(out old);
+        var inputs = new INPUT[] {
+            MouseAt(x, y, 0), MouseAt(x, y, 0x0002), MouseAt(x, y, 0x0004),
+            MouseAt(x, y, 0x0002), MouseAt(x, y, 0x0004), MouseAt(old.X, old.Y, 0),
+        };
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // IMAGE_LOAD_CONFIG_DIRECTORY64.DependentLoadFlags of a PE32+ image (the
+    // linker's /DEPENDENTLOADFLAG), or -1 when the image has no such field.
+    public static int DependentLoadFlags(string path)
+    {
+        byte[] pe = System.IO.File.ReadAllBytes(path);
+        int header = BitConverter.ToInt32(pe, 0x3C);
+        if (BitConverter.ToUInt32(pe, header) != 0x00004550) return -1;   // "PE\0\0"
+        int sections = BitConverter.ToUInt16(pe, header + 6);
+        int optionalSize = BitConverter.ToUInt16(pe, header + 20);
+        int optional = header + 24;
+        if (BitConverter.ToUInt16(pe, optional) != 0x20B) return -1;      // PE32+
+        uint rva = BitConverter.ToUInt32(pe, optional + 112 + 10 * 8);     // data directory 10
+        if (rva == 0) return -1;
+        int table = optional + optionalSize;
+        for (int i = 0; i < sections; ++i)
+        {
+            int section = table + i * 40;
+            uint virtualSize = BitConverter.ToUInt32(pe, section + 8);
+            uint virtualAddress = BitConverter.ToUInt32(pe, section + 12);
+            uint rawSize = BitConverter.ToUInt32(pe, section + 16);
+            uint rawPointer = BitConverter.ToUInt32(pe, section + 20);
+            if (rva >= virtualAddress && rva < virtualAddress + Math.Max(virtualSize, rawSize))
+            {
+                int offset = (int)(rawPointer + (rva - virtualAddress));
+                if (BitConverter.ToUInt32(pe, offset) < 80) return -1;          // the structure's own Size
+                return BitConverter.ToUInt16(pe, offset + 78);
+            }
+        }
+        return -1;
+    }
+
     public static void EnablePerMonitorDpi()
     {
         SetThreadDpiAwarenessContext(new IntPtr(-4));
@@ -640,6 +725,31 @@ function Wait-WindowVisible($Session, [string]$ClassName, [bool]$Visible = $true
         Start-Sleep -Milliseconds 25
     } while ([Environment]::TickCount -lt $deadline)
     return $false
+}
+
+function Get-VisibleDialogs($Session) {
+    @([WinNetMeterNative]::GetWindows([uint32]$Session.Process.Id) | Where-Object { $_.ClassName -eq '#32770' -and $_.Visible })
+}
+
+# Waits until at least $Count message boxes are up (or the time runs out), and returns them.
+function Wait-Dialogs($Session, [int]$Count, [int]$TimeoutMs = 3000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    do {
+        $dialogs = @(Get-VisibleDialogs $Session)
+        if ($dialogs.Count -ge $Count) { break }
+        Start-Sleep -Milliseconds 50
+    } while ([Environment]::TickCount -lt $deadline)
+    Start-Sleep -Milliseconds 300   # a second box would show up now
+    @(Get-VisibleDialogs $Session)
+}
+
+function Wait-NoDialog($Session, [int]$TimeoutMs = 3000) {
+    $deadline = [Environment]::TickCount + $TimeoutMs
+    while (@(Get-VisibleDialogs $Session).Count -gt 0) {
+        if ([Environment]::TickCount -ge $deadline) { return $false }
+        Start-Sleep -Milliseconds 50
+    }
+    $true
 }
 
 function Get-IniString([string]$Section, [string]$Key) {
@@ -862,6 +972,11 @@ if ($Check -eq 'Metadata') {
     Assert-True ($version.OriginalFilename -eq 'WinNetMeter.exe') 'OriginalFilename mismatch'
     Assert-True ($version.FileVersion -eq $sourceVersion) 'FileVersion mismatch'
     Assert-True ($version.ProductVersion -eq $sourceVersion) 'ProductVersion mismatch'
+    # The numeric FILEVERSION (WINNETMETER_VERSION) is bumped separately from the string.
+    $numeric = [version]$sourceVersion
+    Assert-True ($version.FileMajorPart -eq $numeric.Major -and $version.FileMinorPart -eq $numeric.Minor -and
+                 $version.FileBuildPart -eq $numeric.Build -and $version.FilePrivatePart -eq 0) ("Numeric file version {0}.{1}.{2}.{3} does not match {4}" -f
+                 $version.FileMajorPart, $version.FileMinorPart, $version.FileBuildPart, $version.FilePrivatePart, $sourceVersion)
     $manifest = [WinNetMeterNative]::ReadManifest($exePath)
     Assert-True ($null -ne $manifest) 'No embedded application manifest'
     Assert-True ($manifest -match 'name="Microsoft\.Windows\.Common-Controls"\s+version="6\.0\.0\.0"') 'Manifest lacks the Common Controls 6 dependency'
@@ -889,6 +1004,12 @@ if ($Check -eq 'StaticRuntime') {
     $clrControl = "0 [       0] RVA [size] of COM descriptor directory" -match $emptyClrPattern
     Assert-True $clrControl 'CLR-header negative control is invalid'
     Assert-True ($headers -match $emptyClrPattern) 'PE contains a CLR COM descriptor'
+    # Exploit mitigations (build.bat): ASLR and DEP are linker defaults, CFG and
+    # (x64 only) CET shadow stacks are asked for.
+    foreach ($characteristic in @('Dynamic base', 'NX compatible', 'Control Flow Guard')) {
+        Assert-True ($headers -match ('(?m)^\s+' + [regex]::Escape($characteristic) + '\s*$')) "PE lacks '$characteristic'"
+    }
+    if ($Arch -eq 'x64') { Assert-True ($headers -match 'CET compatible') 'PE is not marked CET compatible' }
     'STATIC_RUNTIME_OK'
     exit 0
 }
@@ -900,6 +1021,10 @@ if ($Check -eq 'Imports') {
     Assert-True $importControl 'Import allowlist negative control did not detect an unexpected DLL'
     $unexpected = @(Get-Imports | Where-Object { $_ -notin $allowlist })
     Assert-True ($unexpected.Count -eq 0) "Unexpected imports: $($unexpected -join ', ')"
+    # IPHLPAPI and DWMAPI are not KnownDLLs: without LOAD_LIBRARY_SEARCH_SYSTEM32
+    # (0x800) for static imports, a DLL of that name beside the exe loads first.
+    $loadFlags = [WinNetMeterNative]::DependentLoadFlags($exePath)
+    Assert-True ($loadFlags -eq 0x800) ("Static imports are not limited to System32 (DependentLoadFlags {0})" -f $loadFlags)
     'IMPORT_ALLOWLIST_OK'
     exit 0
 }
@@ -1404,6 +1529,15 @@ try {
             [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
             $startupProperties = Get-ItemProperty -LiteralPath $startupKey
             Assert-True ($null -eq $startupProperties.PSObject.Properties[$startupValueName]) 'Startup entry was not removed'
+
+            # The entry of a copy in another folder shows as unticked; an Apply that
+            # leaves the box alone must not delete it (Apply wrote the key every time).
+            $otherCopy = '"C:\Elsewhere\WinNetMeter.exe"'
+            Set-ItemProperty -LiteralPath $startupKey -Name $startupValueName -Value $otherCopy
+            Assert-True ([int][WinNetMeterNative]::SendMessageW($startup, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero) -eq 0) 'Start with Windows is checked'
+            [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr]2005, [IntPtr]::Zero)
+            $after = (Get-ItemProperty -LiteralPath $startupKey).PSObject.Properties[$startupValueName]
+            Assert-True ($null -ne $after -and $after.Value -eq $otherCopy) "Apply changed another copy's startup entry"
             'PREFERENCES_INTEGRATION_OK'
         }
         'SaveFailureDialog' {
@@ -1427,6 +1561,21 @@ try {
                     [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
                 }
                 Assert-True ($dialogs.Count -eq 1) "Expected one save-failure dialog, found $($dialogs.Count)"
+
+                # With the window open, a live change that cannot be saved is reported at
+                # once, not at the next opening. A save that works re-arms the report.
+                Assert-True (Wait-NoDialog $session) 'The save-failure dialog did not close'
+                Assert-True (Get-AppWindow $session $mainClass).Visible 'The window is not open'
+                Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
+                [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)
+                Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $true
+                # Posted: the handler shows a modal box and would not return to a SendMessage.
+                Assert-True ([WinNetMeterNative]::PostMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)) 'Live change could not be posted'
+                $live = @(Wait-Dialogs $session 1)
+                foreach ($dialog in $live) {
+                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+                }
+                Assert-True ($live.Count -eq 1) "Expected the live change to be reported in one dialog while the window was open, found $($live.Count)"
                 'SAVE_FAILURE_DIALOG_OK'
             } finally {
                 Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
@@ -1826,6 +1975,106 @@ try {
             } finally {
                 $fake.Dispose()
             }
+        }
+        'SessionEnd' {
+            $main = Get-AppWindow $session $mainClass
+            $prefix = [WinNetMeterNative]::GetDlgItem($main.Handle, 2028)
+            Assert-True ($prefix -ne [IntPtr]::Zero) 'Upload prefix field was not found'
+            # Nothing has saved the test file yet (it has no SettingsVersion).
+            Assert-True ((Get-IniString 'General' 'SettingsVersion') -eq '') 'The settings file was already saved'
+
+            # A typed edit is saved 750 ms later. Shutdown, restart and sign-out end the
+            # process after WM_ENDSESSION, without WM_DESTROY, so it must save then.
+            [void][WinNetMeterNative]::SendMessageStringW($prefix, 0x000C, [IntPtr]::Zero, 'SE')   # WM_SETTEXT
+            [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0016, [IntPtr]1, [IntPtr]::Zero)   # WM_ENDSESSION
+            Assert-True ((Get-IniString 'General' 'SettingsVersion') -eq '3') 'WM_ENDSESSION did not save the settings'
+            Assert-True ((Get-IniString 'Overlay' 'UploadPrefix') -eq 'x00530045') "WM_ENDSESSION did not save the pending edit: '$(Get-IniString 'Overlay' 'UploadPrefix')'"
+
+            # Exit: the process ends by itself, with code 0, after saving a pending edit.
+            [void][WinNetMeterNative]::SendMessageStringW($prefix, 0x000C, [IntPtr]::Zero, 'EX')
+            Assert-True ([WinNetMeterNative]::PostMessageW($main.Handle, 0x0111, [IntPtr]2024, [IntPtr]::Zero)) 'Exit could not be posted'
+            Assert-True ($session.Process.WaitForExit(5000)) 'WinNetMeter did not exit after Exit'
+            Assert-True ($session.Process.ExitCode -eq 0) "WinNetMeter exited with code $($session.Process.ExitCode)"
+            Assert-True ((Get-IniString 'Overlay' 'UploadPrefix') -eq 'x00450058') 'Exit did not save the pending edit'
+            'SESSION_END_OK'
+        }
+        'UnreadableSettings' {
+            # A settings file that cannot be opened at start (held exclusively by another
+            # program) must not be replaced by defaults, which would lose its totals.
+            Stop-TestApp $session
+            [IO.File]::WriteAllText($settingsPath, "[General]`r`nSettingsVersion=3`r`n[Overlay]`r`nShowWidget=1`r`nEmbed=0`r`n[Totals]`r`nDownloaded=987654321`r`nUploaded=12345`r`nSince=2024-02-29`r`n")
+            $original = [IO.File]::ReadAllBytes($settingsPath)
+            $holder = [IO.File]::Open($settingsPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            try {
+                $session = Start-TestApp -KeepSettings
+            } finally {
+                $holder.Dispose()
+            }
+            $main = Get-AppWindow $session $mainClass
+            $overlay = Get-AppWindow $session 'WinNetMeterOverlay'
+            $total = New-Object Text.StringBuilder 64
+            [void][WinNetMeterNative]::GetWindowTextW([WinNetMeterNative]::GetDlgItem($main.Handle, 111), $total, $total.Capacity)
+            Assert-True ($total.ToString() -eq '0 B') "Expected default totals while the file was locked, found '$total'"
+
+            # Everything that saves: a live change, session end. The file is free again by now.
+            $unitCombo = [WinNetMeterNative]::GetDlgItem($main.Handle, 2018)
+            [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)
+            [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0016, [IntPtr]1, [IntPtr]::Zero)
+            $now = [IO.File]::ReadAllBytes($settingsPath)
+            Assert-True ([Convert]::ToBase64String($original) -eq [Convert]::ToBase64String($now)) 'The unreadable settings file was overwritten'
+
+            # The user is told once, when the window opens.
+            Assert-True ([WinNetMeterNative]::PostMessageW($overlay.Handle, 0x0203, [IntPtr]::Zero, [IntPtr]::Zero)) 'Open request failed'
+            $dialogs = @(Wait-Dialogs $session 1)
+            foreach ($dialog in $dialogs) {
+                [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+            }
+            Assert-True ($dialogs.Count -eq 1) "Expected one dialog about the unreadable file, found $($dialogs.Count)"
+            'UNREADABLE_SETTINGS_OK'
+        }
+        'SecondLaunch' {
+            # Launching again opens the running instance's window the way a meter
+            # double-click does: controls refreshed, a pending save failure reported.
+            $main = Get-AppWindow $session $mainClass
+            $unitCombo = [WinNetMeterNative]::GetDlgItem($main.Handle, 2018)
+            Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $true
+            try {
+                [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0111, [IntPtr](2018 -bor (1 -shl 16)), $unitCombo)
+                Assert-True (-not (Get-AppWindow $session $mainClass).Visible) 'The window opened too early'
+                $second = Start-Process -FilePath $exePath -ArgumentList $appArguments -PassThru
+                Assert-True ($second.WaitForExit(3000)) 'Second instance did not exit within three seconds'
+                Assert-True ($second.ExitCode -eq 0) "Second instance exited with code $($second.ExitCode)"
+                Assert-True (Wait-WindowVisible $session $mainClass) 'A second launch did not open the window'
+                $dialogs = @(Wait-Dialogs $session 1)
+                foreach ($dialog in $dialogs) {
+                    [void][WinNetMeterNative]::PostMessageW($dialog.Handle, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+                }
+                Assert-True ($dialogs.Count -eq 1) "A second launch did not report the pending save failure ($($dialogs.Count) dialogs)"
+            } finally {
+                Set-ItemProperty -LiteralPath $settingsPath -Name IsReadOnly -Value $false
+            }
+            'SECOND_LAUNCH_OK'
+        }
+        'MeterClick' {
+            # A real double-click on the meter's background, between the letters, opens
+            # the window. Layered windows pass the mouse through pixels at alpha 0, and
+            # the background used to be 0: only the strokes of the text took clicks.
+            # (Other checks send WM_LBUTTONDBLCLK straight to the window, past hit testing.)
+            $main = Get-AppWindow $session $mainClass
+            foreach ($embedded in @($false, $true)) {
+                if ($embedded) { Set-EmbedMode $session $main.Handle $true }
+                $meter = if ($embedded) { Get-EmbeddedMeter $session } else { Get-AppWindow $session 'WinNetMeterOverlay' }
+                # Inside the 4 px left padding, at the top: never text.
+                $x = $meter.Rect.Left + 1
+                $y = $meter.Rect.Top + 1
+                Assert-True ([WinNetMeterNative]::DoubleClickAt($x, $y) -eq 6) 'SendInput did not take the clicks'
+                $mode = if ($embedded) { 'embedded' } else { 'overlay' }
+                Assert-True (Wait-WindowVisible $session $mainClass) "Double-clicking the $mode meter's background at ($x,$y) did not open the window"
+                [void][WinNetMeterNative]::SendMessageW($main.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+                Assert-True (Wait-WindowVisible $session $mainClass $false) 'The window did not close'
+                "METER_CLICK $mode at ($x,$y) opened the window"
+            }
+            'METER_CLICK_OK'
         }
         'IdleRedraws' {
             # A render that would draw the same picture skips the drawing: with text

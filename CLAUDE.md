@@ -69,6 +69,9 @@ pwsh src\tests\windows_integration_tests.ps1 -Check <Name> [-Arch x64|arm64]
 - Match the existing style: 4-space indent, `static` free functions, `g_` globals, comments
   that explain *why*, not what.
 - No new DLL imports without updating the `Imports` allowlist on purpose; static CRT (`/MT`).
+  Static imports load from System32 only (`/DEPENDENTLOADFLAG:0x800`, asserted by `Imports`);
+  CFG and, on x64, CET are asserted by `StaticRuntime`.
+- Both version macros must agree: `main.cpp` has a `static_assert`, `Metadata` checks the PE.
 - Settings must stay backward compatible: never rename or repurpose an INI key, give every new
   key a default, and keep loading files written by every earlier release (UTF-16 since 0.1.6,
   ANSI before). Unit tests cover legacy files; extend them when the format changes.
@@ -82,5 +85,6 @@ pwsh src\tests\windows_integration_tests.ps1 -Check <Name> [-Arch x64|arm64]
 
 1. Bump both macros in `src/version.h` (`WINNETMETER_VERSION` and `WINNETMETER_VERSION_STRING`).
 2. Push `main` and wait for CI to pass.
-3. `git tag -a vX.Y.Z` and push the tag. `release.yml` builds, tests and publishes the zip,
-   the exe and `.sha256` files. It fails if the tag does not match `version.h`.
+3. `git tag -a vX.Y.Z` and push the tag. `release.yml` runs the whole of `ci.yml` (it is
+   also a reusable workflow), then builds and publishes the zip, the exe and `.sha256`
+   files. It fails if the tag does not match `version.h`.

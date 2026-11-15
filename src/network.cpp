@@ -76,8 +76,11 @@ void FormatBytes(ULONGLONG bytes, wchar_t* out, size_t maxLen) {
         swprintf_s(out, maxLen, L"%.2f KB", static_cast<double>(bytes) / 1024.0);
     } else if (bytes < 1024ULL * 1024 * 1024) {
         swprintf_s(out, maxLen, L"%.2f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
-    } else {
+    } else if (bytes < 1024ULL * 1024 * 1024 * 1024) {
         swprintf_s(out, maxLen, L"%.2f GB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        // Saved totals reach terabytes in a year or two of normal use.
+        swprintf_s(out, maxLen, L"%.2f TB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0 * 1024.0));
     }
 }
 

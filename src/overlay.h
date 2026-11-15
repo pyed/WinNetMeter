@@ -87,8 +87,19 @@ inline bool IsUsableTaskbarPart(const RECT& part, const RECT& taskbar) {
     return part.right > part.left && part.bottom > part.top && IntersectRect(&overlap, &part, &taskbar);
 }
 
+// With a right-to-left display language the taskbar is mirrored: the
+// notification area is at the left end and the app buttons start from the
+// right. Vertical taskbars do not mirror. Unknown without a notification area.
+inline bool IsTrayAtStart(const TaskbarLayout& layout) {
+    if (layout.edge != ABE_TOP && layout.edge != ABE_BOTTOM) return false;
+    if (!IsUsableTaskbarPart(layout.tray, layout.taskbar)) return false;
+    return layout.tray.left + layout.tray.right < layout.taskbar.left + layout.taskbar.right;
+}
+
 // Meter rectangle for an anchor. logicalOffset moves it along the taskbar
 // (right on horizontal taskbars, down on vertical ones), relative to the anchor.
+// On a mirrored taskbar the anchors mirror too ("left edge" is then the start of
+// the taskbar, at the right, away from the tray); offsets stay left to right.
 inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, MeterAnchor anchor, int logicalOffset,
                                        int stackedHeight = 0) {
     if (anchor == MeterAnchor::Legacy) {
@@ -105,12 +116,13 @@ inline RECT CalculateAnchoredMeterRect(const TaskbarLayout& layout, UINT dpi, Me
     int x = taskbar.left + (taskbar.right - taskbar.left - width) / 2;
     int y = taskbar.top + (taskbar.bottom - taskbar.top - height) / 2;
     if (layout.edge == ABE_TOP || layout.edge == ABE_BOTTOM) {
+        const bool mirrored = IsTrayAtStart(layout);
         if (anchor == MeterAnchor::BesideTray) {
-            x = (hasTray ? layout.tray.left : taskbar.right) - gap - width;
+            x = mirrored ? layout.tray.right + gap : (hasTray ? layout.tray.left : taskbar.right) - gap - width;
         } else if (anchor == MeterAnchor::AfterApps && hasApps) {
-            x = layout.apps.right + gap;
+            x = mirrored ? layout.apps.left - gap - width : layout.apps.right + gap;
         } else {
-            x = taskbar.left + gap;
+            x = mirrored ? taskbar.right - gap - width : taskbar.left + gap;
         }
         x = ClampOverlay(x + offset, taskbar.left + padding, taskbar.right - padding - width);
     } else {
@@ -151,19 +163,26 @@ inline bool IsTaskbarMostlyOnMonitor(const RECT& taskbar, UINT edge, const RECT&
 // clock has none either), but the meter must not cover their far end. Reserve
 // the same logical length there as the primary's notification area takes, so
 // "next to the tray" sits the same distance from the end on every taskbar.
-// Empty when the primary's notification area is unknown.
+// A mirrored primary (tray at the left) is mirrored at the left end. Empty when
+// the primary's notification area is unknown, or would take the whole taskbar.
 inline RECT MirrorTrayArea(const TaskbarLayout& primary, UINT primaryDpi,
                            const RECT& taskbar, UINT edge, UINT dpi) {
     RECT tray = {};
     if (!IsUsableTaskbarPart(primary.tray, primary.taskbar)) return tray;
     const bool primaryHorizontal = primary.edge == ABE_TOP || primary.edge == ABE_BOTTOM;
-    const int primaryLength = primaryHorizontal ? primary.taskbar.right - primary.tray.left
-                                                : primary.taskbar.bottom - primary.tray.top;
+    const bool mirrored = IsTrayAtStart(primary);
+    const int primaryLength = !primaryHorizontal ? primary.taskbar.bottom - primary.tray.top
+                              : mirrored ? primary.tray.right - primary.taskbar.left
+                                         : primary.taskbar.right - primary.tray.left;
     const int length = MulDiv(primaryLength, static_cast<int>(dpi ? dpi : 96),
                               static_cast<int>(primaryDpi ? primaryDpi : 96));
-    if (length <= 0) return tray;
+    const bool horizontal = edge == ABE_TOP || edge == ABE_BOTTOM;
+    const int span = horizontal ? taskbar.right - taskbar.left : taskbar.bottom - taskbar.top;
+    if (length <= 0 || length >= span) return tray;
     tray = taskbar;
-    if (edge == ABE_TOP || edge == ABE_BOTTOM) {
+    if (horizontal && mirrored) {
+        tray.right = taskbar.left + length;
+    } else if (horizontal) {
         tray.left = taskbar.right - length;
     } else {
         tray.top = taskbar.bottom - length;
@@ -194,8 +213,12 @@ inline void ApplyIconAlpha(BYTE* pixels, int width, int height, int stride,
     }
 }
 
+// Premultiplied, for UpdateLayeredWindow. Windows hit-tests a per-pixel-alpha
+// layered window by its alpha: pixels at 0 pass the mouse through to whatever is
+// behind. minimumAlpha keeps the background above that (1 is invisible) so the
+// whole box takes clicks, not only the strokes of the text.
 inline void ApplyOverlayAlpha(BYTE* pixels, int width, int height, int stride,
-                              int splitY, COLORREF topColor, COLORREF bottomColor) {
+                              int splitY, COLORREF topColor, COLORREF bottomColor, BYTE minimumAlpha = 0) {
     for (int y = 0; y < height; ++y) {
         const COLORREF color = y < splitY ? topColor : bottomColor;
         BYTE* row = pixels + static_cast<std::size_t>(y) * static_cast<std::size_t>(stride);
@@ -207,7 +230,7 @@ inline void ApplyOverlayAlpha(BYTE* pixels, int width, int height, int stride,
             pixel[0] = static_cast<BYTE>((static_cast<unsigned>(GetBValue(color)) * coverage) / 255U);
             pixel[1] = static_cast<BYTE>((static_cast<unsigned>(GetGValue(color)) * coverage) / 255U);
             pixel[2] = static_cast<BYTE>((static_cast<unsigned>(GetRValue(color)) * coverage) / 255U);
-            pixel[3] = coverage;
+            pixel[3] = coverage > minimumAlpha ? coverage : minimumAlpha;
         }
     }
 }

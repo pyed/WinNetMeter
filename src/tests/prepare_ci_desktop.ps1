@@ -31,8 +31,8 @@ function Test-ShellFlyoutOpen {
 $prompts = @(Get-Process -Name WWAHost -ErrorAction SilentlyContinue)
 $prompts | Stop-Process -Force
 "Stopped $($prompts.Count) WWAHost process(es)"
-for ($proxy = [CiDesktop]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, 'Shell_OOBEProxy', $null); $proxy -ne [IntPtr]::Zero;
-     $proxy = [CiDesktop]::FindWindowExW([IntPtr]::Zero, $proxy, 'Shell_OOBEProxy', $null)) {
+for ($proxy = [CiDesktop]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, 'Shell_OOBEProxy', [NullString]::Value); $proxy -ne [IntPtr]::Zero;
+     $proxy = [CiDesktop]::FindWindowExW([IntPtr]::Zero, $proxy, 'Shell_OOBEProxy', [NullString]::Value)) {
     if ([CiDesktop]::IsWindowVisible($proxy)) {
         [void][CiDesktop]::ShowWindowAsync($proxy, 0)   # SW_HIDE
         'Hid a Shell_OOBEProxy window'

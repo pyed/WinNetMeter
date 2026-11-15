@@ -6,13 +6,22 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Read-only by default; only the job that publishes may write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # The full CI (build, unit tests, PE checks, every behavioral check on both
+  # architectures), so a tag cannot publish a commit that fails it.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build & Package (${{ matrix.arch }})
+    needs: ci
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -92,6 +101,9 @@ jobs:
     needs: build
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
 
     steps:
       - name: Download Release Artifacts

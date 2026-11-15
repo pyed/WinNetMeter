@@ -26,19 +26,19 @@ WinNetMeter is a lightweight Windows 10 and 11 utility for x64 and ARM64 PCs tha
 2. Extract the ZIP if needed, then run `WinNetMeter.exe`.
 3. Keep the executable anywhere you prefer; WinNetMeter does not require installation or administrator rights.
 
-Requires Windows 10 version 1607 or later, on x64 or ARM64. Release binaries are currently unsigned, so Windows SmartScreen may show a warning the first time an unfamiliar build is run.
+Requires Windows 10 version 1607 or later, on x64 or ARM64; it is developed and tested on Windows 11 (Windows 10 has not been tested since 0.2.0). Release binaries are currently unsigned, so Windows SmartScreen may show a warning the first time an unfamiliar build is run. The `.sha256` files detect a damaged download; because they are published next to the files, they do not prove who built them.
 
 ## Usage and settings
 
-WinNetMeter starts in the notification area. Double-click the tray icon or the taskbar meter to open its status and settings window. Right-click the tray icon for the window, taskbar-meter visibility, and Exit.
+WinNetMeter starts in the notification area. Double-click the tray icon or the taskbar meter to open its status and settings window; the meter's whole box takes the click, so keep it over an empty part of the taskbar. Starting WinNetMeter again while it runs opens the same window. Right-click the tray icon for the window, taskbar-meter visibility, and Exit.
 
-The status panel shows the speeds, totals for the current session, and saved totals accumulated since the displayed date. **Reset total** clears the saved counters and stamps them with today's date. The adapter list starts with **Automatic (adapter in use)**; choosing a specific adapter keeps WinNetMeter on it, and it is found again after the adapter is reconnected or renamed.
+The status panel shows the speeds, totals for the current session, and saved totals accumulated since the displayed date (up to terabytes). Totals are saved every minute while traffic flows, and when Windows shuts down or you sign out. **Reset total** clears the saved counters and stamps them with today's date. The adapter list starts with **Automatic (adapter in use)**; choosing a specific adapter keeps WinNetMeter on it, and it is found again after the adapter is reconnected or renamed.
 
 Settings provide:
 
 - Upload and download prefixes (empty is allowed), colors with an **Automatic** option that follows the taskbar theme, and the meter font.
 - **Show speed in** bytes or bits, the minimum speed unit, and decimal places.
-- **Meter position**: next to the tray, after the app buttons, at the left edge, or *Classic* (the fixed point used before 0.2.0, kept for upgraded settings), and an offset from there in logical pixels (`-4096` to `4096`), clamped to the taskbar.
+- **Meter position**: next to the tray, after the app buttons, at the left edge, or *Classic* (the fixed point used before 0.2.0, kept for upgraded settings), and an offset from there in logical pixels (`-4096` to `4096`), clamped to the taskbar. With a right-to-left display language the taskbar is mirrored and so are these positions (*left edge* is then the start of the taskbar, at the right); the offset still counts left to right.
 - **Reset meter** restores the default prefixes, colors, font, speed format and position. It does not clear totals or change the check boxes below.
 - **Show taskbar meter** and **Show tray icon**. At least one stays enabled so the window remains reachable.
 - **Start with Windows** for the current user, through the standard `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry.
@@ -50,6 +50,8 @@ Settings provide:
 ```text
 %APPDATA%\WinNetMeter\settings.ini
 ```
+
+If that file exists but cannot be read when WinNetMeter starts (another program holds it open), WinNetMeter runs on default settings, says so when its window is opened, and does not save over the file until it is restarted, so the saved totals are not lost.
 
 Settings files from earlier releases keep working: an upgraded meter keeps its exact position (shown as *Classic*), and the old default white colors become **Automatic**.
 
@@ -65,7 +67,7 @@ Fullscreen applications hide the meter on purpose until fullscreen ends. WinNetM
 
 Requirements:
 
-- Windows x64.
+- Windows 10 or 11, x64 or ARM64.
 - Visual Studio 2022 or later (or its Build Tools) with the MSVC C++ tools for your architecture (x64, or ARM64 on Windows on Arm).
 - A Windows SDK containing the resource compiler and Win32 headers/libraries.
 
@@ -76,7 +78,7 @@ cd src
 .\build.bat
 ```
 
-This builds for the machine you are on; `.\build.bat arm64` cross-compiles for Windows on Arm from an x64 machine that has the MSVC ARM64 build tools. The build script locates an installed MSVC toolchain and compiles with C++20, `/W4`, `/WX`, `/permissive-`, `/MT`, and `/O2`. The output is:
+This builds for the machine you are on; `.\build.bat arm64` cross-compiles for Windows on Arm from an x64 machine that has the MSVC ARM64 build tools. The build script locates an installed MSVC toolchain and compiles with C++20, `/W4`, `/WX`, `/permissive-`, `/MT`, and `/O2`, with Control Flow Guard, CET shadow-stack compatibility (x64) and system DLLs loaded from System32 only (`/DEPENDENTLOADFLAG:0x800`). The output is:
 
 ```text
 src\out\WinNetMeter.exe
@@ -91,7 +93,7 @@ cd src\tests
 
 Behavioral checks run against the built executable with `pwsh src\tests\windows_integration_tests.ps1 -Check <Name>`; the check names are listed at the top of that script. They use their own settings file and startup entry, so they never touch a real installation, but they drive the real desktop: they take the foreground, create fullscreen windows and open Start.
 
-CI builds the executable for every push to `main` and every pull request, natively for x64 and for ARM64 (on GitHub's Windows on Arm runners), runs the unit suite, verifies the PE metadata, manifest, architecture, static runtime and imports, and runs every behavioral check on both. A release tag rebuilds and repeats the unit and PE checks for both architectures, refuses a tag that does not match `src/version.h`, and publishes the ZIPs, the executables and their SHA-256 checksums.
+CI builds the executable for every push to `main` and every pull request, natively for x64 and for ARM64 (on GitHub's Windows on Arm runners), runs the unit suite, verifies the PE metadata, manifest, architecture, static runtime and imports, and runs every behavioral check on both. A release tag first runs that whole CI workflow, then rebuilds for both architectures, refuses a tag that does not match `src/version.h`, and publishes the ZIPs, the executables and their SHA-256 checksums; only the publishing job can write to the repository. Dependabot keeps the GitHub Actions up to date.
 
 ## Technical notes and privacy
 

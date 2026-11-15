@@ -184,9 +184,29 @@ bool ParseTaskbarMeterOffset(const wchar_t* text, int* value) {
     return true;
 }
 
-void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
+// Whether the file can be opened for reading. GetPrivateProfileStringW returns
+// its defaults for a file it cannot open, which is indistinguishable from a
+// first run, so ask first. A virus scanner or backup tool can hold the file for
+// a moment, hence the retries (about half a second in all).
+static bool CanReadSettingsFile(const wchar_t* filePath) {
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (attempt > 0) Sleep(50 * attempt);
+        HANDLE file = CreateFileW(filePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+            return true;
+        }
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
+    }
+    return false;
+}
+
+bool LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     *s = AppSettings(); // start with defaults
     ResetLifetimeTotals(s);
+    if (!filePath || !CanReadSettingsFile(filePath)) return false;
     GetPrivateProfileStringW(L"Overlay", L"FontFamily", L"Segoe UI", s->fontFamily, _countof(s->fontFamily), filePath);
 
     wchar_t encodedPrefix[METER_PREFIX_CAPACITY * 4 + 2] = {};
@@ -203,7 +223,7 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
     wchar_t num[32] = {};
     GetPrivateProfileStringW(L"Overlay", L"FontSize", L"8", num, _countof(num), filePath);
     double sz = wcstod(num, nullptr);
-    if (sz >= 4.0 && sz <= 72.0) {
+    if (sz >= FONT_SIZE_MIN && sz <= FONT_SIZE_MAX) {
         s->fontSize = sz;
     }
 
@@ -280,6 +300,7 @@ void LoadSettingsCustom(AppSettings* s, const wchar_t* filePath) {
             wcscpy_s(s->adapterAlias, _countof(s->adapterAlias), alias);
         }
     }
+    return true;
 }
 
 // Renders the whole settings file in memory. Written as UTF-16LE with a BOM so
@@ -474,10 +495,11 @@ bool SaveSettingsCustom(const AppSettings* s, const wchar_t* filePath) {
     return WriteFileAtomic(path, BuildSettingsIni(s));
 }
 
-void LoadSettings(AppSettings* s) {
+bool LoadSettings(AppSettings* s) {
     std::wstring path = GetDefaultSettingsPath();
-    LoadSettingsCustom(s, path.c_str());
+    const bool loaded = LoadSettingsCustom(s, path.c_str());
     s->startWithWindows = IsStartWithWindowsEnabled() ? 1 : 0;
+    return loaded;
 }
 
 bool SaveSettings(const AppSettings* s) {
@@ -507,7 +529,12 @@ bool IsStartWithWindowsEnabled() {
         return false;
     }
     actual.resize(wcsnlen_s(actual.c_str(), actual.size()));
-    return actual == expected;
+    return IsSameStartupCommand(actual.c_str(), expected.c_str());
+}
+
+bool IsSameStartupCommand(const wchar_t* actual, const wchar_t* expected) {
+    if (!actual || !expected) return false;
+    return CompareStringOrdinal(actual, -1, expected, -1, TRUE) == CSTR_EQUAL;
 }
 
 bool SetStartWithWindowsEnabled(bool enabled) {

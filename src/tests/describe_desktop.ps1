@@ -76,7 +76,7 @@ if ([DesktopProbe]::SHAppBarMessage(5, [ref]$data) -ne [UIntPtr]::Zero) {
 $state = New-Object DesktopProbe+APPBARDATA
 $state.cbSize = $data.cbSize
 "Taskbar state (ABM_GETSTATE): 0x{0:X} (1 = auto-hide, 2 = always on top)" -f [DesktopProbe]::SHAppBarMessage(4, [ref]$state).ToUInt64()
-$taskbar = [DesktopProbe]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, 'Shell_TrayWnd', $null)
+$taskbar = [DesktopProbe]::FindWindowExW([IntPtr]::Zero, [IntPtr]::Zero, 'Shell_TrayWnd', [NullString]::Value)
 "Shell_TrayWnd: " + [DesktopProbe]::Describe($taskbar) + " dpi " + [DesktopProbe]::GetDpiForWindow($taskbar)
 foreach ($part in 'TrayNotifyWnd', 'ReBarWindow32/MSTaskSwWClass', 'Windows.UI.Composition.DesktopWindowContentBridge') {
     "  ${part}: " + [DesktopProbe]::Describe([DesktopProbe]::Child($taskbar, $part))

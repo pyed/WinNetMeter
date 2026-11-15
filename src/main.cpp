@@ -24,7 +24,7 @@ enum {
     ID_TIMER = 1,
     ID_SETTINGS_SAVE_TIMER = 2,
     WM_TRAYICON = WM_APP + 1,
-    WM_OPEN_FROM_METER = WM_APP + 2,   // posted by the meter thread on double-click
+    WM_OPEN_FROM_METER = WM_APP + 2,   // posted by the meter thread on double-click, and by a second launch
 
     // Main window control IDs
     ID_COMBO_IF = 101,
@@ -98,6 +98,31 @@ static const wchar_t MAIN_WINDOW_CLASS[] = L"WinNetMeterMain";
 static const wchar_t TEST_WINDOW_CLASS[] = L"WinNetMeterMainTest";
 static const wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.SingleInstance";
 static const wchar_t TEST_INSTANCE_MUTEX[] = L"Local\\WinNetMeter.IntegrationTest.SingleInstance";
+
+// version.h keeps the numeric version (resources) and the string (everything
+// else) side by side; a release with one bumped and not the other must not build.
+static constexpr int NUMERIC_VERSION[] = { WINNETMETER_VERSION };
+static constexpr bool VersionStringMatchesNumeric(const char* text) {
+    int part = 0;
+    int value = 0;
+    bool digits = false;
+    for (;; ++text) {
+        if (*text >= '0' && *text <= '9') {
+            value = value * 10 + (*text - '0');
+            digits = true;
+        } else if (*text == '.' || *text == '\0') {
+            if (!digits || part >= 3 || NUMERIC_VERSION[part] != value) return false;
+            ++part;
+            value = 0;
+            digits = false;
+            if (*text == '\0') return part == 3 && NUMERIC_VERSION[3] == 0;
+        } else {
+            return false;
+        }
+    }
+}
+static_assert(VersionStringMatchesNumeric(WINNETMETER_VERSION_STRING),
+              "WINNETMETER_VERSION and WINNETMETER_VERSION_STRING in version.h disagree");
 
 // Global application state
 static HINSTANCE g_hInst = nullptr;
@@ -173,6 +198,11 @@ static ULONGLONG g_lastTotalsSaveTick = 0;
 static bool g_totalsDirty = false;
 static bool g_settingsSaveFailed = false;
 static bool g_settingsSavePending = false;
+static bool g_saveFailureReported = false;     // a box was shown since the last successful save
+// The settings file existed but could not be read at start: this session runs on
+// defaults and never saves over it (its totals would be lost).
+static bool g_settingsLoadFailed = false;
+static bool g_settingsLoadFailureShown = false;
 
 // Forward declarations
 static void ShowMainWindow();
@@ -194,8 +224,10 @@ static int ScaleDpi(int val, int dpi) {
 static bool PersistSettingsNow() {
     if (g_hwndMain) KillTimer(g_hwndMain, ID_SETTINGS_SAVE_TIMER);
     g_settingsSavePending = false;
+    if (g_settingsLoadFailed) return false;   // reported on its own, see ReportSettingsSaveFailure
     if (SaveSettings(&g_settings)) {
         g_settingsSaveFailed = false;
+        g_saveFailureReported = false;
         return true;
     }
     g_settingsSaveFailed = true;
@@ -220,19 +252,38 @@ static void ReportSettingsSaveFailure(HWND hwnd) {
     // and allow only one box, so a later failure is reported once, afterwards.
     static bool reporting = false;
     g_settingsSaveFailed = false;
+    g_saveFailureReported = true;
     if (reporting) return;
     reporting = true;
 
     wchar_t path[MAX_PATH] = {};
     GetSettingsPath(path, _countof(path));
-    wchar_t message[MAX_PATH + 192] = {};
-    _snwprintf_s(message, _countof(message), _TRUNCATE,
-                 L"Settings could not be saved to:\n\n%s\n\n"
-                 L"Check that the file is not read-only and that the drive has free space. "
-                 L"Your changes stay active for this session only.",
-                 path);
+    wchar_t message[MAX_PATH + 320] = {};
+    if (g_settingsLoadFailed) {
+        g_settingsLoadFailureShown = true;
+        _snwprintf_s(message, _countof(message), _TRUNCATE,
+                     L"Settings could not be read from:\n\n%s\n\n"
+                     L"WinNetMeter started with default settings and will not save over that file, "
+                     L"so its saved totals are kept. Close any program that has it open, then restart "
+                     L"WinNetMeter. Changes made now last for this session only.",
+                     path);
+    } else {
+        _snwprintf_s(message, _countof(message), _TRUNCATE,
+                     L"Settings could not be saved to:\n\n%s\n\n"
+                     L"Check that the file is not read-only and that the drive has free space. "
+                     L"Your changes stay active for this session only.",
+                     path);
+    }
     MessageBoxW(hwnd, message, L"WinNetMeter", MB_OK | MB_ICONERROR);
     reporting = false;
+}
+
+// A change made in the settings panel could not be saved. Say so at once while
+// the user is looking at the window, once until a save succeeds again (every
+// keystroke would otherwise bring another box); else when it is next opened.
+static void ReportLiveSaveFailure(bool saved) {
+    if (saved || g_saveFailureReported || !g_hwndMain || !IsWindowVisible(g_hwndMain)) return;
+    ReportSettingsSaveFailure(g_hwndMain);
 }
 
 static HFONT MakeFont(const wchar_t* family, double pt, int style, int dpi,
@@ -421,13 +472,19 @@ static void UpdateSpeedValues(ULONGLONG downBps, ULONGLONG upBps) {
 // ---- Tray Icon Generation ----------------------------------------------------
 // Drawn at the size the shell uses for the taskbar's DPI, so it is not rescaled
 // (a fixed 16 px icon was tripled into a blur at 300%).
-static HICON CreateSpeedTrayIcon(const wchar_t* upSpeed, const wchar_t* downSpeed) {
+static UINT GetTrayIconDpi() {
     HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
     UINT dpi = taskbar ? GetDpiForWindow(taskbar) : 0;
-    if (dpi == 0) dpi = static_cast<UINT>(g_currentDpi);
-    return CreateMeterIcon(GetTrayIconSizeForDpi(dpi), upSpeed, downSpeed,
-                           ResolveMeterColor(g_settings.up, g_taskbarLight),
-                           ResolveMeterColor(g_settings.down, g_taskbarLight));
+    return dpi ? dpi : static_cast<UINT>(g_currentDpi);
+}
+
+// Everything the icon's picture depends on.
+static std::wstring GetTrayIconKey(UINT dpi) {
+    wchar_t key[160] = {};
+    _snwprintf_s(key, _countof(key), _TRUNCATE, L"%u|%s|%s|%06lX|%06lX", dpi, g_szUpCompact, g_szDownCompact,
+                 static_cast<unsigned long>(ResolveMeterColor(g_settings.up, g_taskbarLight)),
+                 static_cast<unsigned long>(ResolveMeterColor(g_settings.down, g_taskbarLight)));
+    return key;
 }
 
 static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {
@@ -438,10 +495,27 @@ static void BuildTrayTooltip(wchar_t* out, size_t maxLen) {
     _snwprintf_s(out, maxLen, _TRUNCATE, L"WinNetMeter\n%s\n%s", up, down);
 }
 
+// What the shell shows now: the icon is only redrawn and sent when its picture
+// changes, the tooltip only when its text does (most ticks change neither).
+static std::wstring g_trayIconKey;
+static std::wstring g_trayTip;
+static bool g_trayIconShown = false;   // the shell accepted our icon
+
 static void UpdateTrayIcon() {
     if (!g_settings.showTrayIcon) return;
 
-    HICON hNewIcon = CreateSpeedTrayIcon(g_szUpCompact, g_szDownCompact);
+    const UINT dpi = GetTrayIconDpi();
+    const std::wstring key = GetTrayIconKey(dpi);
+    wchar_t tip[sizeof(NOTIFYICONDATAW::szTip) / sizeof(wchar_t)] = {};
+    BuildTrayTooltip(tip, _countof(tip));
+    const bool newPicture = !g_hCurrentTrayIcon || key != g_trayIconKey;
+    if (g_trayIconShown && !newPicture && g_trayTip == tip) return;
+
+    HICON icon = newPicture
+        ? CreateMeterIcon(GetTrayIconSizeForDpi(dpi), g_szUpCompact, g_szDownCompact,
+                          ResolveMeterColor(g_settings.up, g_taskbarLight),
+                          ResolveMeterColor(g_settings.down, g_taskbarLight))
+        : nullptr;
 
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
@@ -449,49 +523,22 @@ static void UpdateTrayIcon() {
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = hNewIcon;
-    BuildTrayTooltip(nid.szTip, _countof(nid.szTip));
+    nid.hIcon = icon ? icon : g_hCurrentTrayIcon;
+    wcscpy_s(nid.szTip, tip);
 
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
+    // If adding the icon failed (a shell still starting at logon), there is
+    // nothing to modify: add it now, and keep trying every tick until it works.
+    g_trayIconShown = Shell_NotifyIconW(NIM_MODIFY, &nid) || Shell_NotifyIconW(NIM_ADD, &nid);
+    g_trayTip = g_trayIconShown ? tip : L"";
 
-    if (g_hCurrentTrayIcon) {
-        DestroyIcon(g_hCurrentTrayIcon);
+    if (icon) {
+        if (g_hCurrentTrayIcon) DestroyIcon(g_hCurrentTrayIcon);
+        g_hCurrentTrayIcon = icon;
+        g_trayIconKey = key;
     }
-    g_hCurrentTrayIcon = hNewIcon;
 }
 
-static void SetupTrayIcon() {
-    if (!g_settings.showTrayIcon) {
-        RemoveTrayIcon();
-        return;
-    }
-
-    NOTIFYICONDATAW old = {};
-    old.cbSize = sizeof(old);
-    old.hWnd = g_hwndMain;
-    old.uID = 1;
-    Shell_NotifyIconW(NIM_DELETE, &old);
-
-    if (g_hCurrentTrayIcon) {
-        DestroyIcon(g_hCurrentTrayIcon);
-        g_hCurrentTrayIcon = nullptr;
-    }
-
-    g_hCurrentTrayIcon = CreateSpeedTrayIcon(g_szUpCompact, g_szDownCompact);
-
-    NOTIFYICONDATAW nid = {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = g_hwndMain;
-    nid.uID = 1;
-    nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
-    nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = g_hCurrentTrayIcon;
-    BuildTrayTooltip(nid.szTip, _countof(nid.szTip));
-
-    Shell_NotifyIconW(NIM_ADD, &nid);
-}
-
-static void RemoveTrayIcon() {
+static void ForgetTrayIcon() {
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_hwndMain;
@@ -502,6 +549,19 @@ static void RemoveTrayIcon() {
         DestroyIcon(g_hCurrentTrayIcon);
         g_hCurrentTrayIcon = nullptr;
     }
+    g_trayIconKey.clear();
+    g_trayTip.clear();
+    g_trayIconShown = false;
+}
+
+// Adds the icon afresh (startup, Explorer restarted, the option switched on).
+static void SetupTrayIcon() {
+    ForgetTrayIcon();
+    UpdateTrayIcon();
+}
+
+static void RemoveTrayIcon() {
+    ForgetTrayIcon();
 }
 
 // ---- Adapter selection -------------------------------------------------------
@@ -702,7 +762,9 @@ static void ShowMainWindow() {
         ShowWindow(g_hwndMain, IsIconic(g_hwndMain) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(g_hwndMain);
         // Surface a background save failure once the user is actually looking.
-        if (g_settingsSaveFailed) ReportSettingsSaveFailure(g_hwndMain);
+        if (g_settingsSaveFailed || (g_settingsLoadFailed && !g_settingsLoadFailureShown)) {
+            ReportSettingsSaveFailure(g_hwndMain);
+        }
     }
 }
 
@@ -741,7 +803,9 @@ static bool PickColor(HWND hwndOwner, COLORREF* color) {
     return true;
 }
 
-static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
+// Returns false when the dialog is cancelled. Sizes are limited to what
+// LoadSettings accepts, so a choice survives a restart.
+static bool PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
     LOGFONTW lf = {};
     lf.lfHeight = -MulDiv(static_cast<int>(s->fontSize * 96.0 / 72.0 + 0.5), dpi, 96);
     lf.lfWeight = (s->fontStyle & 1) ? FW_BOLD : FW_REGULAR;
@@ -754,17 +818,22 @@ static void PickFont(HWND hwndOwner, AppSettings* s, int dpi) {
     cf.lStructSize = sizeof(cf);
     cf.hwndOwner = hwndOwner;
     cf.lpLogFont = &lf;
-    cf.Flags = CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS | CF_EFFECTS;
-    if (ChooseFontW(&cf)) {
-        wcsncpy_s(s->fontFamily, _countof(s->fontFamily), lf.lfFaceName, _TRUNCATE);
-        s->fontSize = cf.iPointSize / 10.0;
-        int style = 0;
-        if (lf.lfWeight >= FW_BOLD) style |= 1;
-        if (lf.lfItalic) style |= 2;
-        if (lf.lfUnderline) style |= 4;
-        if (lf.lfStrikeOut) style |= 8;
-        s->fontStyle = style;
-    }
+    cf.Flags = CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS | CF_EFFECTS | CF_LIMITSIZE;
+    cf.nSizeMin = FONT_SIZE_MIN;
+    cf.nSizeMax = FONT_SIZE_MAX;
+    if (!ChooseFontW(&cf)) return false;
+    wcsncpy_s(s->fontFamily, _countof(s->fontFamily), lf.lfFaceName, _TRUNCATE);
+    double size = cf.iPointSize / 10.0;
+    if (size < FONT_SIZE_MIN) size = FONT_SIZE_MIN;
+    if (size > FONT_SIZE_MAX) size = FONT_SIZE_MAX;
+    s->fontSize = size;
+    int style = 0;
+    if (lf.lfWeight >= FW_BOLD) style |= 1;
+    if (lf.lfItalic) style |= 2;
+    if (lf.lfUnderline) style |= 4;
+    if (lf.lfStrikeOut) style |= 8;
+    s->fontStyle = style;
+    return true;
 }
 
 // The minimum-unit choices read in the selected units; the stored value is the
@@ -938,8 +1007,9 @@ static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmedia
     g_settings.minimumSpeedUnit = state.tempSettings.minimumSpeedUnit;
     g_settings.decimalPlaces = state.tempSettings.decimalPlaces;
     g_settings.speedBits = state.tempSettings.speedBits;
+    bool saved = true;
     if (persistImmediately) {
-        PersistSettingsNow();
+        saved = PersistSettingsNow();
     } else {
         SchedulePersistSettings();
     }
@@ -947,6 +1017,7 @@ static void ApplyLiveMeterSettings(bool fontChanged = false, bool persistImmedia
     if (fontChanged) RefreshFontsAndRelayout(g_currentDpi);
     UpdateTrayIcon();
     UpdateMeter();
+    ReportLiveSaveFailure(saved);
 }
 
 static bool ApplySettings(HWND hwnd) {
@@ -988,7 +1059,10 @@ static bool ApplySettings(HWND hwnd) {
                     L"WinNetMeter", MB_OK | MB_ICONWARNING);
         return false;
     }
-    if (!SetStartWithWindowsEnabled(state.tempSettings.startWithWindows != 0)) {
+    // Only when the box changed: the registry may not be writable (a policy), and
+    // another copy of WinNetMeter, from another folder, may own the entry.
+    const bool startup = state.tempSettings.startWithWindows != 0;
+    if (startup != IsStartWithWindowsEnabled() && !SetStartWithWindowsEnabled(startup)) {
         MessageBoxW(hwnd, L"Windows startup registration could not be updated.",
                     L"WinNetMeter", MB_OK | MB_ICONERROR);
         return false;
@@ -1091,8 +1165,7 @@ static bool HandleSettingsCommand(HWND hwnd, int id, int code) {
         color = automatic ? METER_COLOR_AUTO : ResolveMeterColor(color, g_taskbarLight);
         ApplyLiveMeterSettings();
     } else if (id == ID_SET_FONT_BTN) {
-        PickFont(hwnd, &state.tempSettings, g_currentDpi);
-        ApplyLiveMeterSettings(true);
+        if (PickFont(hwnd, &state.tempSettings, g_currentDpi)) ApplyLiveMeterSettings(true);
     } else if (id == ID_SET_SAVE_BTN) {
         ApplySettings(hwnd);
     } else if (id == ID_LIFETIME_RESET) {
@@ -1194,7 +1267,8 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (code == CBN_DROPDOWN) {
                 PopulateAdapters();
             }
-        } else if (id == ID_AUTHOR_LINK) {
+        } else if (id == ID_AUTHOR_LINK && code == STN_CLICKED) {
+            // Not on STN_DBLCLK: a double-click also sends STN_CLICKED first.
             ShellExecuteW(nullptr, L"open", L"https://github.com/pyed/WinNetMeter", nullptr, nullptr, SW_SHOWNORMAL);
         } else {
             HandleSettingsCommand(hwnd, id, code);
@@ -1205,7 +1279,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == ID_TIMER) {
             OnTimerTick();
         } else if (wp == ID_SETTINGS_SAVE_TIMER) {
-            PersistSettingsNow();
+            ReportLiveSaveFailure(PersistSettingsNow());   // a debounced settings edit
         }
         return 0;
     case WM_OPEN_FROM_METER:
@@ -1283,6 +1357,14 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowWindow(hwnd, SW_HIDE);
         }
         return 0;
+    case WM_ENDSESSION:
+        // Shutdown, restart and sign-out end the process after this returns,
+        // without WM_DESTROY: save the totals and any debounced edit now.
+        if (wp) {
+            KillTimer(hwnd, ID_TIMER);
+            if (PersistSettingsNow()) g_totalsDirty = false;
+        }
+        return 0;
     case WM_DESTROY:
         KillTimer(hwnd, ID_TIMER);
         // Flush any debounced edit before the process goes away.
@@ -1337,8 +1419,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         CloseHandle(singleInstance);
         HWND existing = FindWindowW(g_mainWindowClass, nullptr);
         if (existing) {
-            ShowWindowAsync(existing, SW_RESTORE);
-            SetForegroundWindow(existing);
+            // Opened the way a meter double-click opens it (refreshed controls, a
+            // pending save failure reported). This process was just started by
+            // the user, so it may pass the foreground on to the running one.
+            DWORD processId = 0;
+            GetWindowThreadProcessId(existing, &processId);
+            if (processId) AllowSetForegroundWindow(processId);
+            PostMessageW(existing, WM_OPEN_FROM_METER, 0, 0);
         }
         return 0;
     }
@@ -1352,7 +1439,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     g_uTaskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
 
-    LoadSettings(&g_settings);
+    g_settingsLoadFailed = !LoadSettings(&g_settings);
     g_taskbarLight = IsSystemThemeLight();
     g_lastTotalsSaveTick = GetTickCount64();
 

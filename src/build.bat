@@ -20,8 +20,14 @@ set "VCARGS=%HOST%_%TARGET%"
 if /i "%HOST%"=="%TARGET%" set "VCARGS=%TARGET%"
 call "%~dp0vcenv.bat" %VCARGS% || exit /b 1
 
+rem Hardening: Control Flow Guard; static imports (iphlpapi, dwmapi, ...) only
+rem from System32, never from the exe's folder (a Downloads folder can hold a
+rem planted DLL of that name); CET shadow stacks on x64, which Arm64 lacks.
+set "LINKHARDEN=/guard:cf /DEPENDENTLOADFLAG:0x800"
+if /i "%TARGET%"=="x64" set "LINKHARDEN=/guard:cf /DEPENDENTLOADFLAG:0x800 /CETCOMPAT"
+
 cd /d "%~dp0"
 if not exist out mkdir out
 rc /nologo /fo out\app.res app.rc || exit /b 1
-cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /Fo"out\\" /Fe"out\WinNetMeter.exe" main.cpp network.cpp settings.cpp render.cpp meter.cpp out\app.res /link advapi32.lib iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib dwmapi.lib /SUBSYSTEM:WINDOWS
+cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /MT /O2 /utf-8 /DUNICODE /D_UNICODE /DNDEBUG /guard:cf /Fo"out\\" /Fe"out\WinNetMeter.exe" main.cpp network.cpp settings.cpp render.cpp meter.cpp out\app.res /link advapi32.lib iphlpapi.lib gdi32.lib user32.lib shell32.lib comctl32.lib comdlg32.lib dwmapi.lib /SUBSYSTEM:WINDOWS %LINKHARDEN%
 exit /b %ERRORLEVEL%

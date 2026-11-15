@@ -897,6 +897,27 @@ void TestMeterAnchors() {
     r = CalculateAnchoredMeterRect(left, 96, MeterAnchor::LeftEdge, 0);
     assert(r.top == 4);
     printf("PASS: TestMeterAnchors (vertical)\n");
+
+    // Right-to-left display languages mirror the taskbar: tray at the left, app
+    // buttons running from the right. The anchors mirror with it.
+    TaskbarLayout mirrored = bottom;
+    mirrored.tray = { 0, 1040, 270, 1080 };
+    mirrored.apps = { 700, 1040, 1220, 1080 };
+    assert(IsTrayAtStart(mirrored) && !IsTrayAtStart(bottom) && !IsTrayAtStart(left) && !IsTrayAtStart(bare));
+    r = CalculateAnchoredMeterRect(mirrored, 96, MeterAnchor::BesideTray, 0);
+    assert(r.left == 274 && r.right - r.left == 132);           // 4 px gap after the tray
+    r = CalculateAnchoredMeterRect(mirrored, 96, MeterAnchor::AfterApps, 0);
+    assert(r.right == 696);                                      // before the first button
+    r = CalculateAnchoredMeterRect(mirrored, 96, MeterAnchor::LeftEdge, 0);
+    assert(r.right == 1916);                                     // the start, away from the tray
+    r = CalculateAnchoredMeterRect(mirrored, 96, MeterAnchor::BesideTray, 10);
+    assert(r.left == 284);                                       // offsets still run left to right
+    RECT overlap = {};
+    for (MeterAnchor anchor : { MeterAnchor::BesideTray, MeterAnchor::AfterApps, MeterAnchor::LeftEdge }) {
+        r = CalculateAnchoredMeterRect(mirrored, 96, anchor, 0);
+        assert(!IntersectRect(&overlap, &r, &mirrored.tray));
+    }
+    printf("PASS: TestMeterAnchors (mirrored)\n");
 }
 
 void TestAnchorSettings() {
@@ -1061,6 +1082,20 @@ void TestSecondaryTaskbarGeometry() {
     const RECT verticalSecondary = { 1920, 0, 1968, 1080 };
     const RECT verticalTray = MirrorTrayArea(right, 96, verticalSecondary, ABE_LEFT, 96);
     assert(verticalTray.top == 900 && verticalTray.bottom == 1080 && verticalTray.left == 1920);
+
+    // A mirrored primary: the same length is reserved at the secondary's left
+    // end (it used to reserve from the primary's tray to its right end: all of it).
+    TaskbarLayout mirroredPrimary = primary;
+    mirroredPrimary.tray = { 0, 1032, 220, 1080 };
+    layout.tray = MirrorTrayArea(mirroredPrimary, 96, secondary, ABE_BOTTOM, 144);
+    assert(layout.tray.left == 1920 && layout.tray.right == 1920 + 330);
+    meter = CalculateAnchoredMeterRect(layout, 144, MeterAnchor::BesideTray, 0);
+    assert(meter.left == 1920 + 330 + 6);
+    // Never the whole taskbar: then there is nothing sensible to reserve.
+    TaskbarLayout wide = primary;
+    wide.tray = { 0, 1032, 1920, 1080 };
+    const RECT whole = MirrorTrayArea(wide, 96, { 1920, 1032, 3840, 1080 }, ABE_BOTTOM, 96);
+    assert(IsRectEmpty(&whole));
     printf("PASS: TestSecondaryTaskbarGeometry\n");
 }
 
@@ -1233,6 +1268,68 @@ void TestOverlayAlphaComposition() {
     assert(pixels[19] == 64);
     assert(pixels[23] == 255);
     printf("PASS: TestOverlayAlphaComposition\n");
+
+    // The meter draws its background at alpha 1 so the whole box takes clicks
+    // (alpha 0 lets them through): black, premultiplied, so invisible.
+    BYTE meter[12] = { 0, 0, 0, 0,   0, 0, 0, 0,   200, 200, 200, 0 };
+    ApplyOverlayAlpha(meter, 3, 1, 12, 1, RGB(255, 255, 255), RGB(255, 255, 255), 1);
+    assert(meter[0] == 0 && meter[1] == 0 && meter[2] == 0 && meter[3] == 1);
+    assert(meter[7] == 1);
+    assert(meter[8] == 200 && meter[11] == 200);   // text keeps its coverage
+    printf("PASS: TestOverlayAlphaComposition (clickable background)\n");
+}
+
+void TestByteTotals() {
+    wchar_t buf[64];
+    FormatBytes(1024ULL * 1024 * 1024 * 1023, buf, _countof(buf));
+    assert(wcscmp(buf, L"1023.00 GB") == 0);
+    FormatBytes(1024ULL * 1024 * 1024 * 1024, buf, _countof(buf));
+    assert(wcscmp(buf, L"1.00 TB") == 0);
+    FormatBytes(1024ULL * 1024 * 1024 * 1024 * 1536, buf, _countof(buf));
+    assert(wcscmp(buf, L"1536.00 TB") == 0);
+    FormatBytes(ULLONG_MAX, buf, _countof(buf));
+    assert(wcscmp(buf, L"16777216.00 TB") == 0);
+    printf("PASS: TestByteTotals\n");
+}
+
+void TestStartupCommandComparison() {
+    assert(IsSameStartupCommand(L"\"C:\\Tools\\WinNetMeter.exe\"", L"\"C:\\Tools\\WinNetMeter.exe\""));
+    // Paths are case-insensitive on Windows: the same exe typed differently.
+    assert(IsSameStartupCommand(L"\"c:\\tools\\winnetmeter.EXE\"", L"\"C:\\Tools\\WinNetMeter.exe\""));
+    assert(!IsSameStartupCommand(L"\"D:\\Other\\WinNetMeter.exe\"", L"\"C:\\Tools\\WinNetMeter.exe\""));
+    assert(!IsSameStartupCommand(L"C:\\Tools\\WinNetMeter.exe", L"\"C:\\Tools\\WinNetMeter.exe\""));
+    assert(!IsSameStartupCommand(nullptr, L"x") && !IsSameStartupCommand(L"x", nullptr));
+    printf("PASS: TestStartupCommandComparison\n");
+}
+
+// A settings file that exists but cannot be opened must not load as a first
+// run without saying so: the caller would then save the defaults over it.
+void TestUnreadableSettings() {
+    const wchar_t* path = L".\\test_unreadable.ini";
+    DeleteFileW(path);
+    AppSettings fresh;
+    assert(LoadSettingsCustom(&fresh, path));                    // missing: a first run, fine
+
+    AppSettings saved;
+    saved.lifetimeDownloaded = 123456789;
+    saved.fontSize = 11.0;
+    assert(SaveSettingsCustom(&saved, path));
+    HANDLE holder = CreateFileW(path, GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    assert(holder != INVALID_HANDLE_VALUE);
+    AppSettings blocked;
+    const ULONGLONG start = GetTickCount64();
+    assert(!LoadSettingsCustom(&blocked, path));
+    const ULONGLONG waited = GetTickCount64() - start;
+    printf("INFO: gave up on a locked settings file after %llu ms\n", waited);
+    assert(waited < 3000);
+    assert(blocked.lifetimeDownloaded == 0 && blocked.fontSize == 8.0);   // defaults
+    CloseHandle(holder);
+
+    AppSettings loaded;
+    assert(LoadSettingsCustom(&loaded, path));
+    assert(loaded.lifetimeDownloaded == 123456789 && loaded.fontSize == 11.0);
+    DeleteFileW(path);
+    printf("PASS: TestUnreadableSettings\n");
 }
 
 // Test 9: Fullscreen geometry detection (deterministic, no live windows)
@@ -1526,6 +1623,9 @@ int main() {
     TestFittingFont();
     TestOverlayAlphaComposition();
     TestFullscreenDetection();
+    TestByteTotals();
+    TestStartupCommandComparison();
+    TestUnreadableSettings();
     printf("ALL TESTS PASSED\n");
     return 0;
 }

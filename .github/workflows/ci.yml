@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  # The release workflow runs this whole workflow before it publishes anything.
+  workflow_call:
 
 permissions:
   contents: read
@@ -14,6 +16,7 @@ jobs:
   build:
     name: Build & Test (${{ matrix.arch }} Windows)
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +69,8 @@ jobs:
     name: Behavioral Integration Checks (${{ matrix.arch }} Windows)
     runs-on: ${{ matrix.runner }}
     needs: build
+    # A check that hangs (a modal box nobody closes) must not hold a runner for hours.
+    timeout-minutes: 60
     # These drive a real window, taskbar and Explorer on the runner and gate the
     # build. The list is read from the harness, so a new check runs here as soon
     # as it is added to its ValidateSet.

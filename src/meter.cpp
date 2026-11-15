@@ -534,8 +534,9 @@ bool PaintMeter(HWND window, POINT destination, int width, int height, UINT dpi,
         DrawTextW(memory, g_state.downText.c_str(), -1, &downRect, textFlags);
     }
     GdiFlush();
+    // Background at alpha 1: invisible, but the whole box takes the double-click.
     ApplyOverlayAlpha(static_cast<BYTE*>(bits), width, height, stride, split,
-                      g_state.upColor, g_state.downColor);
+                      g_state.upColor, g_state.downColor, 1);
 
     POINT source = { 0, 0 };
     SIZE size = { width, height };
@@ -771,12 +772,15 @@ void EnsureSlotWindow(MeterSlot& slot) {
     if (!slot.window) slot.window = CreateOverlayWindow(slot);
 }
 
+void UpdateHooks();
+
 // Creates, swaps or destroys meter windows to match the state and the taskbars
 // that exist now, then renders them.
 void SyncMeters() {
     if (!g_state.show) {
         for (MeterSlot& slot : g_slots) DestroySlotWindow(slot);
         g_slots.clear();
+        UpdateHooks();
         return;
     }
     UpdateAppBarRegistration();
@@ -819,6 +823,7 @@ void SyncMeters() {
         EnsureSlotWindow(slot);
         RenderSlot(slot);
     }
+    UpdateHooks();
 }
 
 // Leading-edge throttle for state-driven renders.
@@ -863,10 +868,33 @@ void CALLBACK OnLocationChanged(HWINEVENTHOOK, DWORD event, HWND hwnd,
     PostMessageW(g_host, WM_METER_CHECK, 0, 0);
 }
 
-void Shutdown() {
+void RemoveHooks() {
     if (g_foregroundHook) UnhookWinEvent(g_foregroundHook);
     if (g_locationHook) UnhookWinEvent(g_locationHook);
     g_foregroundHook = g_locationHook = nullptr;
+}
+
+// The hooks follow foreground and geometry changes, which only overlays act on
+// (an embedded meter hides and moves with its taskbar). Without an overlay the
+// location hook would wake this thread for every window move in the system.
+void UpdateHooks() {
+    if (!HasOverlay()) {
+        RemoveHooks();
+        return;
+    }
+    // Out-of-context hooks call back on this thread through its message loop.
+    if (!g_foregroundHook) {
+        g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                                           nullptr, OnForegroundChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
+    }
+    if (!g_locationHook) {
+        g_locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
+                                         nullptr, OnLocationChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
+    }
+}
+
+void Shutdown() {
+    RemoveHooks();
     KillTimer(g_host, RENDER_TIMER);
     KillTimer(g_host, RAISE_TIMER);
     RemoveAppBarRegistration();
@@ -952,14 +980,8 @@ DWORD WINAPI MeterThread(void*) {
     overlay.lpszClassName = EMBEDDED_CLASS;   // same behaviour, distinct for diagnostics and tests
     RegisterClassExW(&overlay);
 
+    // The WinEvent hooks are installed by UpdateHooks, while an overlay exists.
     g_host = CreateWindowExW(0, HOST_CLASS, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, nullptr);
-    if (g_host) {
-        // Out-of-context hooks call back on this thread through its message loop.
-        g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-                                           nullptr, OnForegroundChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
-        g_locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
-                                         nullptr, OnLocationChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
-    }
     SetEvent(g_ready);
     if (!g_host) return 1;
 

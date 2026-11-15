@@ -8,7 +8,8 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
 - Last completed milestone: **M15** (0.3.0: embedded by default, redraw skipping, ARM64).
   See "Open items" for what next.
-- Third audit, 2026-11-14: see "Audit findings (2026-11-14)". Nothing from it is fixed yet.
+- Third audit, 2026-11-14: see "Audit findings (2026-11-14)". All of it was addressed in
+  **M16** (0.3.1), see the milestone log; what was left out, and why, is listed there.
 
 ## Open items
 
@@ -29,6 +30,8 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   trigger an immediate re-layout instead of waiting for the 1 s refresh.
 
 ## Audit findings (2026-11-14)
+
+Fixed in M16 except where M16 says otherwise. Kept as found, for the reasoning.
 
 Third audit, of `e513602` (0.3.0). **Done by reading, on Linux: nothing was built or run**
 (no MSVC, no Windows), so nothing here is "confirmed" in the sense used further down. The
@@ -695,3 +698,67 @@ this handoff. No code changes. Baseline before starting: build clean, all unit t
   its SHA-256 matched (`a283fc8b...dcb8`), 0.2.0 exited through its Exit command, backups made,
   0.3.0 started through Explorer: embedded at [12,2028,408,2148], Run value unchanged; the live
   file migrated to `SettingsVersion=3` (`Embed=1`) on 0.3.0's first save.
+
+### M16: audit fixes, 0.3.1 (2026-11-15)
+Fixes for every item of "Audit findings (2026-11-14)". Written on Linux without a Windows
+toolchain: nothing here was built or run locally. CI (dispatched on the session branch) is
+the first build and test run; its results are recorded below once in.
+- **Session end:** `WM_ENDSESSION` (wParam TRUE) saves the settings, totals and any
+  debounced edit. Check `SessionEnd`: a typed prefix is on disk when `WM_ENDSESSION` returns
+  (fails without the handler: nothing saved); Exit ends the process with code 0 after saving
+  a pending edit (the first graceful-exit check).
+- **Unreadable settings file:** `LoadSettingsCustom`/`LoadSettings` now return false when
+  the file exists but cannot be opened (retries for ~0.5 s: 50/100/150/200 ms). `main.cpp`
+  then runs on defaults, never saves (`PersistSettingsNow` refuses), and says so once when the
+  window opens (own message). Unit `TestUnreadableSettings` (exclusive holder); check
+  `UnreadableSettings` (file locked at launch, then freed; a live change and `WM_ENDSESSION`
+  must leave it byte-identical; one dialog on open).
+- **Run key:** Apply writes it only when the box differs from the registry, and the command
+  compares without case (`IsSameStartupCommand`, `CompareStringOrdinal`). Unit
+  `TestStartupCommandComparison`; `Preferences` now also asserts that an Apply leaves another
+  copy's entry alone (deleted it before).
+- **Mirrored (RTL) taskbars:** `IsTrayAtStart` (horizontal, tray centre left of the taskbar
+  centre) mirrors the anchors: beside the tray = right of it, after the apps = left of the
+  first button, left edge = the start of the taskbar (its right end). Offsets stay left to
+  right. `MirrorTrayArea` reserves at the left end for a mirrored primary and never the whole
+  taskbar. Unit tests extended (mirrored cases; the old code reserved all 1920 px). Still not
+  run on a real RTL Windows.
+- **Click-through background:** the meter background is drawn at alpha 1 (`ApplyOverlayAlpha`
+  gained `minimumAlpha`), so the whole box takes clicks. Contract change, deliberate: clicks
+  on the meter box no longer reach the taskbar behind it (README says so). Check `MeterClick`
+  double-clicks the background with real input (`SendInput`, absolute, cursor restored in the
+  same input stream), overlay and embedded.
+- **Tray icon:** `UpdateTrayIcon` falls back to `NIM_ADD` when `NIM_MODIFY` fails, every tick
+  until it works; it rebuilds the icon only when its picture changes (DPI, compact texts,
+  colours) and calls the shell only when the picture or tooltip changes. **No check covers
+  the fallback** (the shell cannot be made to refuse an add from a test); `ResourceLeak` still
+  covers the icon lifetime.
+- **Smaller:** the repository link opens on `STN_CLICKED` only (untested: it would open a
+  browser); the font dialog is limited to 4-72 pt (`FONT_SIZE_MIN/MAX`, shared with loading)
+  and Cancel no longer saves (untested: modal common dialog); a second launch posts
+  `WM_OPEN_FROM_METER` after `AllowSetForegroundWindow` (check `SecondLaunch`: a pending save
+  failure is reported, which `ShowWindowAsync` skipped); a failing live or debounced edit is
+  reported at once while the window is open, once until a save succeeds (`SaveFailureDialog`
+  extended); `FormatBytes` goes to TB (unit `TestByteTotals`); README build requirements.
+- **Hardening:** `build.bat` adds `/guard:cf` (compile and link), `/DEPENDENTLOADFLAG:0x800`,
+  and `/CETCOMPAT` on x64. `StaticRuntime` asserts Dynamic base, NX, CFG and (x64) CET from
+  `dumpbin /headers`; `Imports` reads `DependentLoadFlags` from the PE load config
+  (`DependentLoadFlags` in the harness) and asserts 0x800.
+- **Release pipeline:** `ci.yml` is also a reusable workflow; `release.yml` runs it first, so
+  a tag cannot publish a commit that fails any check. Workflow permissions are read-only, the
+  publish job alone gets `contents: write`. `timeout-minutes` on every job. Dependabot
+  (`.github/dependabot.yml`) updates the actions weekly.
+  Not done: pinning actions to commit SHAs (no way to look the SHAs up from this session
+  without reading other repositories); artifact attestations (would only run on a real tag,
+  so untestable before the release; GitHub shows asset digests natively). The README now
+  says what the `.sha256` files do and do not prove.
+- **Version:** `main.cpp` `static_assert`s that `WINNETMETER_VERSION` and
+  `WINNETMETER_VERSION_STRING` agree (checked with clang on Linux: matching accepted, five
+  kinds of mismatch rejected); `Metadata` also compares the PE's numeric file version.
+- **Hooks:** the WinEvent hooks are installed only while an overlay exists (`UpdateHooks`,
+  called by `SyncMeters`), so embedded mode no longer wakes the meter thread on every window
+  move. Covered by the existing overlay checks (Fullscreen, ForegroundZOrder, StartMenu) that
+  depend on the hooks; nothing asserts their absence.
+- Harness: `[NullString]::Value` in `prepare_ci_desktop.ps1` and `describe_desktop.ps1`.
+- Version 0.3.1 (no settings format change; `SETTINGS_VERSION` stays 3).
+
