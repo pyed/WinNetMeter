@@ -4,11 +4,14 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Status
 
-- **v0.3.1 is ready but not tagged** (2026-11-15). The session that made it could push its
-  branch `claude/dreamy-lovelace-nqmz4r` but not tags (HTTP 403 from the session's git proxy).
-  To release: tag the head of that branch (`git tag -a v0.3.1`) and push the tag; merge the
-  branch into `main` as well. Not deployed on the dev machine.
-- Previous release: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64; deployed there.
+- Current release: **v0.3.1** (tag `v0.3.1` on `05fc1fc`, 2026-11-17), x64 and ARM64.
+  Branch `claude/dreamy-lovelace-nqmz4r` was fast-forwarded into `main` (PR 5 shows merged).
+  Before tagging, on the dev machine: `.\build.bat` (x64, clean) and `.\run_tests.bat`
+  (ALL TESTS PASSED). Release run 44020407253: the first attempt failed one ARM64 check,
+  `CustomizationTotals` ("Downloaded total was not reset"), which had passed on the same
+  commit twice; a re-run of the failed job passed and published. See Open items. Not yet
+  deployed on the dev machine (the running copy is still 0.3.0).
+- Previous release: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64.
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
 - Last completed milestone: **M16** (0.3.1: audit fixes). Before it, **M15** (0.3.0: embedded
   by default, redraw skipping, ARM64).
@@ -17,6 +20,11 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   **M16** (0.3.1), see the milestone log; what was left out, and why, is listed there.
 
 ## Open items
+
+- `CustomizationTotals` is flaky on slow runners: after confirming the totals reset it sleeps
+  a fixed 200 ms and reads the INI once, while the app saves only after `MessageBoxW`
+  returns. Poll the INI instead (like the `Wait-Ini*` checks around it). The app's reset
+  path did not change in 0.3.1.
 
 - Vertical taskbars (M14) are verified against a stand-in only; check on a real taskbar moved
   to the left or right (a user setting, not changed from tests).
@@ -780,6 +788,7 @@ the first build and test run (results at the end of this entry).
   `SaveFailureDialog` additions each assert something the 0.3.0 code does not do. For
   `MeterClick` it depends on hit testing at alpha 0, which is documented but not observed here.
 - Not done on real hardware: an actual shutdown, an RTL Windows, a refused tray-icon add.
-- Not tagged: pushing `v0.3.1` was refused (HTTP 403) for this session; see Status.
+- That session could not push the `v0.3.1` tag (HTTP 403); it was tagged and released from
+  the dev machine on 2026-11-17, see Status.
   `release.yml` now runs the full CI before building and publishing.
 
