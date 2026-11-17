@@ -9,7 +9,10 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
   Before tagging, on the dev machine: `.\build.bat` (x64, clean) and `.\run_tests.bat`
   (ALL TESTS PASSED). Release run 44020407253: the first attempt failed one ARM64 check,
   `CustomizationTotals` ("Downloaded total was not reset"), which had passed on the same
-  commit twice; a re-run of the failed job passed and published. See Open items. Not yet
+  commit twice; a re-run of the failed job passed and published. Cause: the check slept a
+  fixed 200 ms after confirming the reset, then read the INI once, while the app saves only
+  after `MessageBoxW` returns. Fixed after the release: it now polls with `Wait-IniInt` /
+  `Wait-IniString` (same assertions). The app's reset path did not change. Not yet
   deployed on the dev machine (the running copy is still 0.3.0).
 - Previous release: **v0.3.0** (tag `v0.3.0`, 2026-10-09), x64 and ARM64.
   0.2.0 (same day) completed the plan below, driven by the second audit (2026-10-08).
@@ -21,10 +24,6 @@ Living status document. Update it at every milestone (see `CLAUDE.md`).
 
 ## Open items
 
-- `CustomizationTotals` is flaky on slow runners: after confirming the totals reset it sleeps
-  a fixed 200 ms and reads the INI once, while the app saves only after `MessageBoxW`
-  returns. Poll the INI instead (like the `Wait-Ini*` checks around it). The app's reset
-  path did not change in 0.3.1.
 
 - Vertical taskbars (M14) are verified against a stand-in only; check on a real taskbar moved
   to the left or right (a user setting, not changed from tests).

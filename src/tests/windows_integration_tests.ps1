@@ -1483,12 +1483,11 @@ try {
             Assert-True ($null -ne $dialog) 'Reset confirmation did not appear'
             [void][WinNetMeterNative]::SendMessageW($dialog.Handle, 0x0111, [IntPtr]6, [IntPtr]::Zero)
 
-            Start-Sleep -Milliseconds 200
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Totals', 'Downloaded', 1, $settingsPath) -eq 0) 'Downloaded total was not reset'
-            Assert-True ([WinNetMeterNative]::GetPrivateProfileIntW('Totals', 'Uploaded', 1, $settingsPath) -eq 0) 'Uploaded total was not reset'
-            [void]$iniValue.Clear()
-            [void][WinNetMeterNative]::GetPrivateProfileStringW('Totals', 'Since', '', $iniValue, $iniValue.Capacity, $settingsPath)
-            Assert-True ($iniValue.ToString() -eq (Get-Date -Format 'yyyy-MM-dd')) 'Reset did not stamp today'
+            # The app saves only after MessageBoxW returns, which can trail the SendMessage by
+            # more than a fixed sleep on a slow runner (ARM64 CI): poll instead.
+            Assert-True (Wait-IniInt 'Totals' 'Downloaded' 0) 'Downloaded total was not reset'
+            Assert-True (Wait-IniInt 'Totals' 'Uploaded' 0) 'Uploaded total was not reset'
+            Assert-True (Wait-IniString 'Totals' 'Since' (Get-Date -Format 'yyyy-MM-dd')) 'Reset did not stamp today'
             'CUSTOMIZATION_TOTALS_OK'
         }
         'Preferences' {
